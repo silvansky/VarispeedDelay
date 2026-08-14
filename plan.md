@@ -2,7 +2,7 @@
 
 Delay where every repetition is re-played at a different tape speed: pitch and duration
 change together. Two feedback topologies (cumulative / one-shot), a 7-band graphic EQ in
-the recycle path, click protection via short fades at each repetition boundary.
+the repetition path, click protection via short fades at each repetition boundary.
 Repetitions slower than the delay time overlap the following ones — they are never cut
 short at the period boundary.
 
@@ -49,16 +49,16 @@ State per voice:
 | `src`, `dst` | generation buffer indices (`dst == src + 1`) |
 | `pOut` | read position in `src`, advances by `r` — the audible tap |
 | `w` | write position in `dst`, advances by 1 — the recycle tap |
-| `eq` | own 7-band filter state |
+| `eqOut`, `eqRec` | own 7-band filter state, one per tap (`eqRec` unused in Raw) |
 | `env` | fade state (see below) |
 
 Per sample, for each active voice:
 
 ```
-v      = interp(src, pOut);  pOut += r          // this repetition, audible
+v      = eqOut(interp(src, pOut));  pOut += r   // EQ'd once, this repetition, audible
 rec    = (fbType == Raw ? v * env               // recycled = the varispeed signal
-                        : src[w])               // recycled = unity copy, no resampling
-dst[w] = softclip(eq(rec * feedback));  ++w     // assignment — see below
+                        : eqRec(src[w]))        // recycled = unity copy, EQ'd, not resampled
+dst[w] = softclip(rec * feedback);  ++w         // assignment — see below
 wetSum += v * env
 ```
 
@@ -347,14 +347,29 @@ other.
 ## Graphic EQ
 
 7 fixed ISO bands, ±12 dB each, RBJ peaking biquads, Q ≈ 1.4, TDF-II, stereo (two filter
-states per band), one instance **per voice** (≤ 5 × 7 × 2 = 70 biquads worst case —
-negligible). Hand-rolled POD biquad struct — **not** `juce::dsp::IIR::Coefficients`,
+states per band). Hand-rolled POD biquad struct — **not** `juce::dsp::IIR::Coefficients`,
 which is reference-counted and allocates on coefficient updates (forbidden on the audio
 thread). Coefficients are computed once per block into a shared POD set (dirty flag per
 band) and copied by value into each voice; only the filter *state* is per voice.
 
-Placement: recycle path, after feedback gain, before the soft clip. Applied once per
-repetition → the EQ curve accumulates across repeats, which is the point.
+**Placement: on the voice's read taps**, before the feedback gain and the soft clip — not
+on the recycle write. The rule is *every repetition is filtered exactly once as it is
+played*, so repetition N carries EQ^N:
+
+- Repetition 1 is filtered. Input enters its generation buffer un-EQ'd; the voice that
+  plays it applies the EQ on the way out, so the first repeat already has the curve. (On
+  the recycle write it did not — the input went in unfiltered and only got EQ'd on the
+  *next* pass, so rep 1 was flat and rep N carried EQ^(N-1).)
+- The recycled part of a buffer is one repetition older and has one more pass baked in,
+  so the accounting stays exact at every generation.
+- Turning a band moves the tone of everything currently sounding, not just of material
+  entering the loop from now on.
+
+**The Raw/Stable switch governs varispeed only — EQ behaves identically in both.** In Raw
+the wet and recycle taps are the same signal, so one EQ instance per voice feeds both. In
+Stable they are different streams (varispeed tap for the ear, unity tap for the loop), so
+a voice carries two instances with independent state and the same curve. Worst case
+5 voices × 2 taps × 7 bands × 2 ch = 140 biquads — still negligible.
 
 `eq_on == false` bypasses the chain; filter state resets when a voice is spawned.
 
@@ -423,7 +438,8 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    accurate block splitting, jump/stop handling, standalone fallback BPM. *Done when:*
    repeats land on the grid, survive division changes and tempo ramps, and a bounce
    matches what was auditioned from any start point.
-5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
+5. **EQ** — 7-band biquads, per-tap voice state, bypass, EQ^N accumulation with rep 1
+   already filtered, identical in both feedback modes.
 6. **UI** — LookAndFeel, layout, speed presets, readouts; optional repetition view.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
    test, sample rates 44.1/48/96, block sizes 32/512/2048, mono and stereo. Write
@@ -464,60 +480,54 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - sync repeatability: rendering bars 5–9 in isolation produces the same samples as
   rendering bars 1–9 and slicing; a loop jump forces a boundary and drops no voice
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
-- EQ: flat with all bands at 0 dB; +12 dB band raises that bin by ~12 dB per repetition
+- EQ: flat with all bands at 0 dB; a +12 dB band raises that bin by ~12 dB on repetition
+  **1** and ~N × 12 dB on repetition N, identically in Raw and Stable
 
 ## Open questions
 
 Behaviour — these change what the plugin does and should be settled before phase 2:
 
-1. **EQ placement — it is currently off by one repetition.** The EQ sits on the recycle
-   write, but the input enters the generation buffer *un*-EQ'd, so repetition 1 is
-   unfiltered, repetition 2 has EQ¹, repetition N has EQ^(N-1). Moving the EQ onto the
-   voice's read tap fixes it (rep N = EQ^N) at the cost of filtering the wet output
-   directly. Related: in Stable mode should the EQ accumulate at all, or should every
-   repetition be filtered exactly once? Cumulative is the classic "repeats get darker"
-   behaviour; once-only is more literally "stable".
-2. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
+1. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
    period, so repeats become fade-shaped blips and `Dmax = 40 ms`. Either scale the fade
    (`xfade = min(8 ms, T/8)`), raise the minimum time to ~50 ms, or both — the generation
    model is a delay, not a comb filter, and it should not pretend otherwise.
-3. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
+2. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-4. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+3. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-5. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
+4. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
    block and keeps `forceFade` permanently on, so every generation gets faded. Needs a
    threshold ("ignore changes under ~0.5 %") or REGRID needs to treat slow automation as
    a BEND-style slew.
-6. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
+5. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
    true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
    finite number (e.g. `Dmax × a few generations`) or report a large constant.
 
 Quality and tuning — decide by ear during phases 3–5:
 
-7. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+6. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
    `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
    ~−6 dBFS) or it colours everything, not just runaway.
-8. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+7. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-9. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+8. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-10. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+9. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-11. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+10. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-12. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+11. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-13. **Factory presets** — none planned. The parameter set is small enough that a handful
+12. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-14. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+13. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
