@@ -496,6 +496,8 @@ src/Voice.h                per-voice state (header-only struct + inline tick)
 src/GraphicEQ.{h,cpp}      7 × stereo biquad, coefficient math
 src/LookAndFeel.{h,cpp}    dark knob/slider styling
 src/RepetitionView.{h,cpp} optional: repeats on a timeline, showing overlap
+src/Presets.{h,cpp}        embedded factory presets, apply/capture, authoring UI
+presets/*.xml              the presets themselves, authored in the standalone
 ```
 
 `PluginProcessor` owns `DelayEngine`, builds the APVTS layout, caches raw parameter
@@ -573,6 +575,55 @@ standalone with two long device names they will not, so give the labels
 `setMinimumHorizontalScale(1.0f)` and let the context help column shrink rather than
 letting the version squeeze.
 
+## Factory presets — authored in the standalone, no DAW
+
+The loop is: launch the standalone, dial in a sound, hit Save, and the preset lands in the
+repo as a file the next build embeds. Nothing is hand-written as XML and no DAW is
+involved at any point.
+
+### Authoring (standalone only)
+
+A `PRESET [combo ▾] [Save…]` row, compiled under
+`#if JucePlugin_Build_Standalone || defined(VSPD_PRESET_AUTHORING)`. In the plugin builds
+the host already provides preset management, so those get the read-only program list and
+nothing else.
+
+- **Save…** — `AlertWindow` asks for a name, then writes `apvts.copyState().toXmlString()`
+  to `<presetDir>/<NN>-<name>.xml`. The `NN` prefix fixes the order in the program list
+  and is stripped for display.
+- **presetDir** — `$VSPD_PRESET_DIR` if set, else `~/Documents/VarispeedDelay/Presets`.
+  Launching the binary directly rather than through `open` lets the env var through, so
+  `VSPD_PRESET_DIR=$PWD/presets build/…/VarispeedDelay.app/Contents/MacOS/VarispeedDelay`
+  writes straight into the repo and the preset is ready to commit.
+- **Combo** — lists embedded presets plus anything found in `presetDir`, so a preset can
+  be recalled and refined before it is committed.
+
+### Embedding
+
+`juce_add_binary_data(VarispeedDelayPresets SOURCES presets/*.xml)`, linked into the
+plugin target; the files reach the code as `BinaryData`. CMake globs at configure time, so
+adding a preset needs a `cmake ..` before it appears — note it in CLAUDE.md.
+
+`getNumPrograms` / `getProgramName` / `setCurrentProgram` map onto AU factory presets and
+VST3 program lists, which is why no browser UI is needed in the plugin builds.
+
+### Applying
+
+**Reset to defaults first, then overlay the preset tree.** `replaceState` leaves any
+parameter absent from the incoming tree at its *current* value, not its default, so
+without the reset an older preset would silently inherit whatever the previous one left
+behind — the classic preset-bleed bug. Every parameter here is sample-rate independent
+(time in ms, speed as a ratio, gains), so a preset is portable across rates and hosts.
+
+### Keeping them honest
+
+The thing that rots silently is a preset that predates a parameter. A unit test walks
+every embedded preset and asserts it parses, and that its parameter IDs exactly match the
+set the APVTS currently registers — so adding or renaming a parameter fails the test run
+instead of shipping presets that half-apply. Round-trip too: apply, capture, compare.
+
+Content is still open — candidates are clean slapback, octave-down wash, runaway tape.
+
 ## Thread safety / RT rules
 
 - All buffers allocated in `prepareToPlay`; the voice pool is fixed size, no allocation
@@ -607,7 +658,10 @@ letting the version squeeze.
    spacing, feedback type) plus CLIP, readouts, footer with hover help; optional
    repetition view. *Done when:* every control has a help string, the footer tracks
    sample rate and block size changes, and the standalone shows its device names.
-7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
+7. **Presets** — authoring row in the standalone, binary-data embedding, program
+   interface, reset-then-overlay apply, staleness test. Author the factory set here, once
+   the engine and UI are settled.
+8. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
    test, sample rates 44.1/48/96, block sizes 32/512/2048, mono and stereo. Write
    README.md / USAGE.md / CLAUDE.md.
 
@@ -663,6 +717,8 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   the threshold; `fb = 2` stays finite over 60 s of noise, and with `clip_on` off the
   ±8 safety clamp still keeps inf and NaN out
 - no NaN/denormals after speed sweeps
+- every embedded preset parses, its parameter IDs match the registered set exactly, and
+  apply → capture → compare round-trips; applying preset B after A leaves nothing of A
 - EQ: flat with all bands at 0 dB; a +12 dB band raises that bin by ~12 dB on repetition
   **1** and ~N × 12 dB on repetition N, identically in Raw and Stable
 
@@ -709,10 +765,8 @@ Decided, not defects. Document these in USAGE rather than engineering them away.
   spread; revisit once the mono-summed engine sounds right.
 - **Freeze / hold** — mute the input write and pin feedback at 1. Nearly free in this
   architecture; add a button when the core is settled.
-- **Factory presets** — no custom preset system needed: JUCE maps `getNumPrograms` /
-  `getProgramName` / `setCurrentProgram` onto AU factory presets and VST3 program lists,
-  so a handful of hard-coded APVTS states ship with no browser UI and no file format.
-  Candidates: clean slapback, octave-down wash, runaway tape.
+- **Factory presets** — mechanism is specified (see *Factory presets*); only the preset
+  content is outstanding, and it cannot be chosen before the engine makes sound.
 - **Memory shape** — the fixed 6 × 20 s stereo pool (46 MB at 48 kHz, 92 at 96) stands.
   Allocating per actual channel count and clamping the max free-mode delay above 48 kHz
   are the levers if it ever becomes a complaint.

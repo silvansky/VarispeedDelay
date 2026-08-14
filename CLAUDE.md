@@ -28,3 +28,16 @@ Current state: skeleton only (passthrough processor, placeholder editor).
 - Self-documenting code, no comments unless critical. Minimal diffs.
 - Commits: imperative, short, no period.
 - JUCE Font API: `juce::FontOptions(size)`, not the deprecated float constructor.
+
+## Presets
+
+Authored in the standalone, not in a DAW: run the binary with `VSPD_PRESET_DIR` pointing
+at `presets/`, dial in a sound, hit Save.
+
+```bash
+VSPD_PRESET_DIR=$PWD/presets \
+  build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app/Contents/MacOS/VarispeedDelay
+```
+
+Run the binary directly — `open` does not pass environment variables through. Adding a
+preset file needs a `cmake ..` before it is embedded (CMake globs at configure time).
