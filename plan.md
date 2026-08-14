@@ -584,26 +584,27 @@ Behaviour — these change what the plugin does and should be settled before pha
 2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
+
 Quality and tuning — decide by ear during phases 3–5:
 
 3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
 4. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
-    and this engine resamples the *same material* once per repetition, so the loss
-    compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
-    defect (mud). Catmull-Rom if it is the latter.
+   and this engine resamples the *same material* once per repetition, so the loss
+   compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
+   defect (mud). Catmull-Rom if it is the latter.
 5. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
-    zipper at ±12 dB and smooth the dB values if needed.
+   zipper at ±12 dB and smooth the dB values if needed.
 6. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
-    per-channel speed offset would be a nice later addition.
+   per-channel speed offset would be a nice later addition.
 
 Scope:
 
 7. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
-    what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
-    the max free-mode delay above 48 kHz is the cheap answer.
+   what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
+   the max free-mode delay above 48 kHz is the cheap answer.
 8. **Factory presets** — none planned. The parameter set is small enough that a handful
-    of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
-    plugin's character better than the defaults alone.
+   of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
+   plugin's character better than the defaults alone.
 9. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
-    input write and pin feedback at 1. Worth a button later.
+   input write and pin feedback at 1. Worth a button later.
