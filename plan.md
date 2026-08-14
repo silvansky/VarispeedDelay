@@ -138,6 +138,22 @@ Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds
 time, so it is pinned to 20 s. (For comparison SiLooper allocates 8 × 60 s.) If this
 proves too heavy, drop the overlap factor to 3× or the max free-mode delay to 10 s.
 
+### Tail length
+
+`getTailLengthSeconds()` returns `10 * Dmax` — ten generations of the longest repetition
+the current settings allow. Since `Dmax = min(4T, kMaxRepSeconds) >= T`, that covers at
+least ten repetition slots plus the duration of the last one, so it is a conservative
+bound on the audible tail: 20 s at `T = 500 ms`, 200 s at `T = 20 s`.
+
+Held in an atomic, recomputed whenever `T` changes. Note that hosts differ on when they
+re-query — AU has a tail-time property change notification, VST3 asks on demand, and some
+hosts cache the value from load — so treat it as a hint, not a contract.
+
+It is deliberately a pragmatic bound rather than a decay estimate. With `fb >= 1` the true
+tail is infinite, and even at `fb = 0.9` ten generations only reaches −9 dB, so a host
+that honours this number will truncate a long feedback wash on an offline bounce. Printing
+the tail through the wet path is the workaround.
+
 ## Delay time changes
 
 `T` is read every block. Every source of change — free knob, sync division, host tempo
@@ -492,6 +508,7 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - chasing read: `r = 0.25` for 60 s, assert no voice ever reads past its source's
   written length; speed jump 0.25 → 4 mid-repetition retires voices instead of reading
   stale samples
+- reported tail equals 10 × Dmax and tracks T through free, sync and division changes
 - voice count never exceeds `kMaxVoices`; buffer indices always in range
 - REGRID time change while sounding: `T` 20 s → 200 ms mid-repetition produces a boundary
   within 200 ms, no voice reads a recycled slot, output stays finite and click-free; `T`
@@ -533,33 +550,29 @@ Behaviour — these change what the plugin does and should be settled before pha
 2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-3. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
-   true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
-   finite number (e.g. `Dmax × a few generations`) or report a large constant.
-
 Quality and tuning — decide by ear during phases 3–5:
 
-4. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+3. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
    `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
    ~−6 dBFS) or it colours everything, not just runaway.
-5. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+4. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-6. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+5. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-7. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+6. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-8. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+7. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-9. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+8. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-10. **Factory presets** — none planned. The parameter set is small enough that a handful
+9. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-11. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+10. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
