@@ -129,7 +129,35 @@ Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds
 - Concurrent voices ≤ `Dmax / T + 1` = 5 → `kMaxVoices = 5`. If the pool is full, steal
   the oldest voice with a fast fade.
 - `fb > 1` grows without bound by design (tape runaway), and overlapping repeats sum on
-  top of that. A `tanh` soft clip per voice keeps the recycle path bounded and musical.
+  top of that. The soft clip below keeps the recycle path bounded and musical.
+
+### Soft clip
+
+A bare `tanh` is not an option: it already compresses ~2.4 dB at full scale, so it would
+colour every setting rather than only runaway ones. The clipper is **linear below a
+threshold** and tanh-shaped above it, joined so that both value and slope are continuous:
+
+```
+t = kClipThreshold (0.5, −6 dBFS), c = kClipCeiling (1.0)
+|x| <= t :  y = x                                             // exactly transparent
+|x| >  t :  y = sign(x) * (t + (c - t) * tanh((|x| - t) / (c - t)))
+```
+
+At `|x| = t` the value is `t` and the derivative is exactly 1, so there is no kink to
+generate harmonics; as `|x|` grows the output asymptotes to `c`. A 0 dBFS peak comes out
+at 0.88 (−1.1 dB); anything under −6 dBFS is untouched sample for sample.
+
+`clip_on` (Bool, default **on**) bypasses it. With the clipper off and `fb > 1` the loop
+really does diverge, so a **hard safety clamp at ±8 (+18 dB) stays in the path
+unconditionally** — inaudible unless you are already deep into runaway, and it keeps inf
+and NaN out of the host's mix bus.
+
+Threshold and ceiling are constants. Exposing the threshold as a float parameter is a
+one-line addition if it turns out to want tuning per-patch; the switch is enough for now.
+
+Placement is the recycle path only, after the feedback gain — its job is bounding the
+loop, not limiting the output. The wet sum of up to 5 overlapping voices is a separate
+issue (open question 2).
 
 ### Memory
 
@@ -341,6 +369,7 @@ supports two voices sounding at once.
 | `speed` | Float | 0.25 – 4.0, log2-symmetric skew (centre 1.0) | |
 | `feedback` | Float | 0 – 2 | >1 = runaway |
 | `fb_type` | Choice | Raw / Stable | |
+| `clip_on` | Bool | default on | soft clip in the recycle path |
 | `eq_on` | Bool | | |
 | `eq_b1` … `eq_b7` | Float | −12 … +12 dB | 63, 160, 400, 1k, 2.5k, 6.3k, 16k |
 | `dry` | Float | 0 – 1 (gain) | |
@@ -446,7 +475,7 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 ├─────────────────────────────────────────────────────────────┤
 │  ( TIME )   [FREE|SYNC] [div ▾]     ( SPEED )   ( FEEDBACK ) │
 │   1.20 s    [REGRID|BEND]            1.00x       0.65        │
-│                          [¼][½][1][2][4]   [RAW|STABLE]      │
+│                          [¼][½][1][2][4]   [RAW|STABLE][CLIP]│
 ├─────────────────────────────────────────────────────────────┤
 │  EQ [ON]   ▮ ▮ ▮ ▮ ▮ ▮ ▮      (7 vertical sliders, ±12 dB)   │
 │            63 160 400 1k 2k5 6k3 16k                        │
@@ -480,10 +509,11 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
 3. **Caps + click protection + live knob moves** — `Dmax` clamp, `pOut` clamp against the
    writer, buffer-slot stealing, `T` changes in both time modes (REGRID snap, BEND slew +
    factor `m`), per-sample speed smoothing, positional fade envelope, unity bypass +
-   `forceFade`, `tanh` soft clip. *Done when:* no clicks at any speed, no zipper on knob
-   sweeps, a 0.25→4 speed sweep bends the whole tail without dropping a repetition, a full
-   time-knob sweep stays clean in both modes and audibly bends in BEND, `fb = 2` saturates
-   instead of exploding. Tune `kSpeedGlideMs` / `kBendUp` / `kBendDown` by ear here.
+   `forceFade`, threshold soft clip + safety clamp. *Done when:* no clicks at any speed,
+   no zipper on knob sweeps, a 0.25→4 speed sweep bends the whole tail without dropping a
+   repetition, a full time-knob sweep stays clean in both modes and audibly bends in BEND,
+   `fb = 1` is transparent and `fb = 2` saturates instead of exploding. Tune
+   `kSpeedGlideMs` / `kBendUp` / `kBendDown` / `kClipThreshold` by ear here.
 4. **Sync** — playhead, divisions up to 2 bars, PPQ-anchored boundaries with sample-
    accurate block splitting, jump/stop handling, standalone fallback BPM. *Done when:*
    repeats land on the grid, survive division changes and tempo ramps, and a bounce
@@ -536,7 +566,11 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   accumulates past the threshold
 - sync repeatability: rendering bars 5–9 in isolation produces the same samples as
   rendering bars 1–9 and slicing; a loop jump forces a boundary and drops no voice
-- `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
+- soft clip: below −6 dBFS the recycle path is sample-exact (fb = 1, EQ off, r = 1 → a
+  clean delay); above it the curve is monotonic and its first difference has no step at
+  the threshold; `fb = 2` stays finite over 60 s of noise, and with `clip_on` off the
+  ±8 safety clamp still keeps inf and NaN out
+- no NaN/denormals after speed sweeps
 - EQ: flat with all bands at 0 dB; a +12 dB band raises that bin by ~12 dB on repetition
   **1** and ~N × 12 dB on repetition N, identically in Raw and Stable
 
@@ -552,27 +586,24 @@ Behaviour — these change what the plugin does and should be settled before pha
    knob as the trim.
 Quality and tuning — decide by ear during phases 3–5:
 
-3. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
-   `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
-   ~−6 dBFS) or it colours everything, not just runaway.
-4. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-5. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+4. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-6. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+5. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-7. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+6. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-8. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+7. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-9. **Factory presets** — none planned. The parameter set is small enough that a handful
+8. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-10. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+9. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
