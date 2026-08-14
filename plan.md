@@ -110,9 +110,10 @@ Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds
 - Truncation at `Dmax` fades out over `kXfadeMs`; it is not a click and not a boundary
   cut.
 - Buffer `G[k]` is live from `kT` until voice `k+1` finishes reading it, at most
-  `(k+5)T` → a ring of `kNumGenBuffers = 6` covers it with a spare.
-- Concurrent voices ≤ `Dmax / T + 1` = 5 → `kMaxVoices = 5`. If a `T` change would
-  exceed the pool, steal the oldest voice with a fast fade.
+  `(k+5)T` → a ring of `kNumGenBuffers = 6` covers it with a spare. That margin holds
+  only while `T` is constant — see *Delay time changes*.
+- Concurrent voices ≤ `Dmax / T + 1` = 5 → `kMaxVoices = 5`. If the pool is full, steal
+  the oldest voice with a fast fade.
 - `fb > 1` grows without bound by design (tape runaway), and overlapping repeats sum on
   top of that. A `tanh` soft clip per voice keeps the recycle path bounded and musical.
 
@@ -122,6 +123,39 @@ Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds
 96 kHz, allocated once in `prepareToPlay`. `kMaxRepSeconds` must be ≥ the maximum delay
 time, so it is pinned to 20 s. (For comparison SiLooper allocates 8 × 60 s.) If this
 proves too heavy, drop the overlap factor to 3× or the max free-mode delay to 10 s.
+
+## Delay time changes
+
+`T` is read every block. Changing it while the delay is sounding — free knob, sync
+division, or host tempo automation — goes through one path:
+
+1. **The period ends at the new `T`.** If `n >= T_new` the boundary fires immediately;
+   otherwise the period simply runs to the new, longer `T`. Response is bounded by one
+   *new* period, so shortening a 20 s delay to 200 ms reacts in 200 ms — never latch to
+   the old boundary. `L[k]` is `max(samples of input actually written, voice write
+   length)`, so a short period just yields a short generation.
+2. **Voices in flight are not retimed.** They keep their rate, pitch and length and play
+   out under the cap they were spawned with. No doppler bend, no discontinuity — the
+   difference from a classic delay line, where moving the knob drags the read pointer.
+   The old tail keeps ringing on the old grid and decays under feedback while new
+   repetitions arrive on the new grid.
+3. **Buffer-slot stealing is what makes a big shrink safe.** Opening generation `k`
+   recycles slot `k mod kNumGenBuffers`; the `6T` lifetime margin only holds while `T` is
+   constant. After a large shrink, a voice spawned under the old `T` can still be reading
+   a slot that is due for reuse. Rule: opening a generation retires — with an
+   `kXfadeMs` fade — every voice that reads or writes the slot being recycled. Voices
+   never outlive their source; this subsumes the "pool full" steal.
+4. **Convergence after a shrink.** At `r >= 1` the recycle preserves content length, so
+   circulating material longer than the new `Dmax = min(4·T_new, kMaxRepSeconds)` is
+   truncated (with a fade) over the next generations; until it decays away, the old long
+   repeats overlap the new short ones. That is audible and intended — a delay tail that
+   re-grids rather than snapping. At `r < 1` the same clamp applies one generation later.
+5. **Lengthening** leaves a gap: the last repetition finishes before the longer period is
+   up, and the wet bus is silent until the next one starts.
+6. **Fades cannot be skipped across a change.** The `|r - 1| < 1e-4` bypass assumes the
+   next generation is contiguous with the current one, which stops being true the moment
+   `T` moves. Voices spawned in the two periods following a `T` change carry a
+   `forceFade` flag.
 
 ## Click protection
 
@@ -166,10 +200,10 @@ using the smoothed global rate, so a speed move bends all sounding repetitions t
 ## Sync mode
 
 `AudioPlayHead::PositionInfo` → bpm + time signature. `T = samplesPerBeat * beatsForDiv`,
-recomputed per block, latched at the next boundary. No host transport (standalone) →
-fall back to an internal BPM field like SiLooper's, or to free mode. Tempo changes take
-effect at the next boundary, so no mid-period buffer resize is ever needed; voices
-already in flight finish under their old cap.
+recomputed per block. No host transport (standalone) → fall back to an internal BPM field
+like SiLooper's, or to free mode. A division change or a tempo ramp is just a `T` change
+and takes the path in *Delay time changes*; buffers are never resized (they are allocated
+at `kMaxRepSeconds`), only the period length moves.
 
 ## Graphic EQ
 
@@ -238,12 +272,13 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    raw/stable recycle, dry/wet. Fixed free-mode time, no EQ, no fades. *Done when:* at 1×
    it is a clean digital delay; at 2× repeats pitch up cumulatively (raw) or stay put
    (stable); at 0.5× repeats overlap instead of cutting off.
-3. **Caps + click protection + smoothing** — `Dmax` clamp, underrun guard, voice
-   stealing, fades, unity-rate bypass, smoothed speed/feedback, `tanh` soft clip.
-   *Done when:* no clicks at any speed, no zipper on knob sweeps, fast 0.25→4 sweeps
-   never read unwritten samples, `fb = 2` saturates instead of exploding.
-4. **Sync** — playhead, divisions up to 2 bars, boundary-latched `T`, standalone fallback
-   BPM. *Done when:* repeats stay locked through tempo changes.
+3. **Caps + click protection + smoothing** — `Dmax` clamp, underrun guard, buffer-slot
+   stealing, live `T` changes, fades, unity-rate bypass + `forceFade`, smoothed
+   speed/feedback, `tanh` soft clip. *Done when:* no clicks at any speed, no zipper on
+   knob sweeps, fast 0.25→4 sweeps never read unwritten samples, a full sweep of the time
+   knob while sounding stays clean, `fb = 2` saturates instead of exploding.
+4. **Sync** — playhead, divisions up to 2 bars, standalone fallback BPM. *Done when:*
+   repeats stay locked through division changes and tempo ramps.
 5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
 6. **UI** — LookAndFeel, layout, speed presets, readouts; optional repetition view.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
@@ -264,6 +299,10 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   written length; speed jump 0.25 → 4 mid-repetition retires voices instead of reading
   stale samples
 - voice count never exceeds `kMaxVoices`; buffer indices always in range
+- time change while sounding: `T` 20 s → 200 ms mid-repetition produces a boundary within
+  200 ms, no voice reads a recycled slot, output stays finite and click-free; `T`
+  200 ms → 20 s leaves a clean gap, not a stuck buffer
+- sync: a division change and a continuous tempo ramp both re-grid without clicks
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
 - EQ: flat with all bands at 0 dB; +12 dB band raises that bin by ~12 dB per repetition
 
@@ -272,11 +311,15 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+2. **Time-knob character** — the spec re-grids without retiming what is already sounding.
+   The tape alternative is to scale every in-flight voice's rate by `T_old / T_new`, so
+   the whole tail doppler-bends into the new time like a real delay line. Cheap to add
+   (voices already carry a rate) and could be a `TIME MODE [REGRID|BEND]` switch.
+3. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+4. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-4. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
-5. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+5. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
+6. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
    per-channel speed offset would be a nice later addition.
