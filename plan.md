@@ -307,6 +307,41 @@ pitch-bends together, all generations at once.
   content was recorded under a moving rate), so the unity-fade bypass stays suspended for
   two generations, same `forceFade` rule as a time change.
 
+## Spacing — GRID / TAPE
+
+`spacing` (Choice, default **GRID**) changes exactly one thing: how the length of the next
+recording window `P[k]` is computed. Everything else — voices, chasing read, caps, fades,
+buffers — is untouched.
+
+```
+GRID:  P[k] = T                     // or the next PPQ crossing in sync mode
+TAPE:  P[k] = D[k] = L[k-1] / r     // the previous repetition's duration
+                                    // clamped to [10 ms, 20 s]
+```
+
+**GRID** keeps repetitions on the delay grid: they arrive every `T` no matter what the
+speed is, so the delay stays in time and slow repeats overlap the next ones.
+
+**TAPE** starts the next repetition when the previous one *ends*, which is what a tape
+loop with a detuned motor actually does. The consequences are worth stating plainly,
+because they are the point of the mode rather than defects:
+
+- Repeats accelerate at `r > 1` and decelerate at `r < 1` — `T`, `T/r`, `T/r²`, … The
+  time knob sets only the *first* period; after that the grid runs away by `r` per
+  generation until it hits a clamp, where it stays and becomes a fixed-period delay.
+- The recording window runs away with it, so fresh input echoes sooner (or later) as the
+  runaway proceeds. Delay time stops being a promise about new material too.
+- Nothing overlaps and nothing chases: voice `k+1` spawns exactly when voice `k` ends, so
+  its source is already complete. At most two voices sound at once (during the seam), and
+  the chasing-read clamp never fires.
+- At `r = 1` TAPE and GRID are identical.
+- In sync mode, PPQ anchoring applies to the first period after a change or a lock-on
+  only; the runaway free-runs from there. Locking a runaway to the grid is a contradiction.
+- Consecutive repetitions are back to back, so the fade-out of one and the fade-in of the
+  next coincide and produce a dip at every seam. This is the case where the optional
+  equal-power overlap in *Click protection* earns its keep — spawn the next voice `xfade`
+  early and cross them.
+
 ## Click protection
 
 The fade length is **proportional to what is being faded**, not a fixed millisecond value,
@@ -370,6 +405,7 @@ supports two voices sounding at once.
 | `feedback` | Float | 0 – 2 | >1 = runaway |
 | `fb_type` | Choice | Raw / Stable | |
 | `clip_on` | Bool | default on | soft clip in the recycle path |
+| `spacing` | Choice | Grid / Tape | when the next repetition starts |
 | `eq_on` | Bool | | |
 | `eq_b1` … `eq_b7` | Float | −12 … +12 dB | 63, 160, 400, 1k, 2.5k, 6.3k, 16k |
 | `dry` | Float | 0 – 1 (gain) | |
@@ -474,7 +510,7 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 │  VARISPEED DELAY                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  ( TIME )   [FREE|SYNC] [div ▾]     ( SPEED )   ( FEEDBACK ) │
-│   1.20 s    [REGRID|BEND]            1.00x       0.65        │
+│   1.20 s    [REGRID|BEND] [GRID|TAPE] 1.00x      0.65        │
 │                          [¼][½][1][2][4]   [RAW|STABLE][CLIP]│
 ├─────────────────────────────────────────────────────────────┤
 │  EQ [ON]   ▮ ▮ ▮ ▮ ▮ ▮ ▮      (7 vertical sliders, ±12 dB)   │
@@ -520,7 +556,8 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    matches what was auditioned from any start point.
 5. **EQ** — 7-band biquads, per-tap voice state, bypass, EQ^N accumulation with rep 1
    already filtered, identical in both feedback modes.
-6. **UI** — LookAndFeel, layout, speed presets, readouts; optional repetition view.
+6. **UI** — LookAndFeel, layout, speed presets, the four switches (sync, time mode,
+   spacing, feedback type) plus CLIP, readouts; optional repetition view.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
    test, sample rates 44.1/48/96, block sizes 32/512/2048, mono and stereo. Write
    README.md / USAGE.md / CLAUDE.md.
@@ -564,6 +601,9 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - deadband: a flat automation lane with float jitter never sets forceFade, so at speed 1
   the output has no periodic dip; a slow ramp of 0.1 %/block is still detected once it
   accumulates past the threshold
+- TAPE spacing: at r = 2 repetition k starts at T(2 - 2^-k) and lasts T/2^k until the
+  10 ms clamp; at r = 0.5 it decelerates to the 20 s clamp; no voice ever chases a source
+  still being written; at r = 1 TAPE and GRID produce identical output
 - sync repeatability: rendering bars 5–9 in isolation produces the same samples as
   rendering bars 1–9 and slicing; a loop jump forces a boundary and drops no voice
 - soft clip: below −6 dBFS the recycle path is sample-exact (fb = 1, EQ off, r = 1 → a
@@ -574,37 +614,44 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - EQ: flat with all bands at 0 dB; a +12 dB band raises that bin by ~12 dB on repetition
   **1** and ~N × 12 dB on repetition N, identically in Raw and Stable
 
-## Open questions
+## Accepted behaviour
 
-Behaviour — these change what the plugin does and should be settled before phase 2:
+Decided, not defects. Document these in USAGE rather than engineering them away.
 
-1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
-   repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
-   and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
-   it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
-   knob as the trim.
+- **Overlap gain.** Four overlapping repeats at `fb = 1` sum to roughly +12 dB. No
+  automatic compensation — no `1/sqrt(activeVoices)` scaling, which would pump as voices
+  come and go. The soft clip bounds the loop and the **wet knob is the trim**.
+- **Generational HF loss.** Linear interpolation loses a little top on every pass, and
+  this engine resamples the same material once per repetition, so it compounds and the
+  tail darkens. Note that this is *not* the EQ: with all bands at 0 dB an RBJ peaking
+  filter is exactly identity, so `eq_on` defeats EQ accumulation but not this. The user
+  can push the 6.3k/16k bands to compensate; otherwise it reads as tape and stays.
+- **EQ zipper.** Band gains are not smoothed — coefficients update per block and a fast
+  drag will zipper. Dragging a graphic EQ during a wash is a performance gesture; leave
+  the mess in.
 
-Quality and tuning — decide by ear during phases 3–5:
+## Tuning by ear (phase 3–5)
 
-3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
-   `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-4. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
-   and this engine resamples the *same material* once per repetition, so the loss
-   compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
-   defect (mud). Catmull-Rom if it is the latter.
-5. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
-   zipper at ±12 dB and smooth the dB values if needed.
-6. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
-   per-channel speed offset would be a nice later addition.
+1. **Anti-aliasing at high `r`.** Reading at 4× aliases, and unlike a one-shot varispeed
+   the aliased components here are recycled and re-aliased every generation, so it
+   compounds. Precedent: SiLooper runs 0.25–4× with plain linear interpolation and no
+   pre-filter at all (`LooperRegion.cpp:1246`) and is fine — but it applies speed once,
+   not per repetition. Try a one-pole LP at `sr/(2r)` on the recycle path when `r > 1` and
+   listen for whether the compounding is actually audible.
+2. **Interpolation order.** Start linear (SiLooper's choice); move to Catmull-Rom if 4×
+   sounds gritty or the generational loss above is worse than tape-like.
 
-Scope:
+## Deferred
 
-7. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
-   what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
-   the max free-mode delay above 48 kHz is the cheap answer.
-8. **Factory presets** — none planned. The parameter set is small enough that a handful
-   of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
-   plugin's character better than the defaults alone.
-9. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
-   input write and pin feedback at 1. Worth a button later.
+- **Stereo width** — one shared read pointer per voice serves both channels, so there is
+  no width effect. A per-channel speed offset (a few cents apart) would give drift and
+  spread; revisit once the mono-summed engine sounds right.
+- **Freeze / hold** — mute the input write and pin feedback at 1. Nearly free in this
+  architecture; add a button when the core is settled.
+- **Factory presets** — no custom preset system needed: JUCE maps `getNumPrograms` /
+  `getProgramName` / `setCurrentProgram` onto AU factory presets and VST3 program lists,
+  so a handful of hard-coded APVTS states ship with no browser UI and no file format.
+  Candidates: clean slapback, octave-down wash, runaway tape.
+- **Memory shape** — the fixed 6 × 20 s stereo pool (46 MB at 48 kHz, 92 at 96) stands.
+  Allocating per actual channel count and clamping the max free-mode delay above 48 kHz
+  are the levers if it ever becomes a complaint.
