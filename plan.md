@@ -601,6 +601,9 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - deadband: a flat automation lane with float jitter never sets forceFade, so at speed 1
   the output has no periodic dip; a slow ramp of 0.1 %/block is still detected once it
   accumulates past the threshold
+- generational loss: at r = 2 or 4, repetition 20 is bit-identical in spectrum to
+  repetition 1 apart from gain (integer read positions, no interpolation); at r = 0.5 the
+  HF rolls off monotonically per generation
 - TAPE spacing: at r = 2 repetition k starts at T(2 - 2^-k) and lasts T/2^k until the
   10 ms clamp; at r = 0.5 it decelerates to the 20 s clamp; no voice ever chases a source
   still being written; at r = 1 TAPE and GRID produce identical output
@@ -621,11 +624,18 @@ Decided, not defects. Document these in USAGE rather than engineering them away.
 - **Overlap gain.** Four overlapping repeats at `fb = 1` sum to roughly +12 dB. No
   automatic compensation — no `1/sqrt(activeVoices)` scaling, which would pump as voices
   come and go. The soft clip bounds the loop and the **wet knob is the trim**.
-- **Generational HF loss.** Linear interpolation loses a little top on every pass, and
-  this engine resamples the same material once per repetition, so it compounds and the
-  tail darkens. Note that this is *not* the EQ: with all bands at 0 dB an RBJ peaking
-  filter is exactly identity, so `eq_on` defeats EQ accumulation but not this. The user
-  can push the 6.3k/16k bands to compensate; otherwise it reads as tape and stays.
+- **Generational HF loss — and only at fractional rates.** The loss comes from `interp()`
+  in the varispeed read tap, not from the EQ: linear interpolation at fractional offset
+  `d` is a lowpass (`|cos(ω/2)|` at `d = 0.5`, about −3 dB at 12 kHz), and each repetition
+  resamples the previous one, so it compounds. `eq_on = false` bypasses the biquads
+  entirely and changes none of this, because the interpolator is upstream of them.
+
+  But it only bites at *fractional* rates. `pOut` accumulates `r` from 0, so at `r = 1, 2,
+  4` every read position is an integer, `interp()` returns the stored sample untouched,
+  and the tail does not darken at all. At `r = 0.5` half the reads land on midpoints, at
+  `0.25` three quarters do, and anything off a preset interpolates constantly. So the
+  speed-up presets stay clean and the slow-down presets darken — which is tape-plausible
+  and stays. The user can push the 6.3k/16k bands to compensate.
 - **EQ zipper.** Band gains are not smoothed — coefficients update per block and a fast
   drag will zipper. Dragging a graphic EQ during a wash is a performance gesture; leave
   the mess in.
@@ -639,7 +649,9 @@ Decided, not defects. Document these in USAGE rather than engineering them away.
    not per repetition. Try a one-pole LP at `sr/(2r)` on the recycle path when `r > 1` and
    listen for whether the compounding is actually audible.
 2. **Interpolation order.** Start linear (SiLooper's choice); move to Catmull-Rom if 4×
-   sounds gritty or the generational loss above is worse than tape-like.
+   sounds gritty or the generational loss above is worse than tape-like. Judge it on the
+   *slow* settings and on speeds between the presets — `1/2/4×` read at integer positions
+   and are already lossless, so they tell you nothing about the interpolator.
 
 ## Deferred
 
