@@ -121,7 +121,7 @@ Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds
   never truncated at any speed. Only later generations at extreme slow settings hit it
   (0.25×: gen 1 = 4T natural, gen 2 would be 16T → clamped to 4T, i.e. each generation
   zooms further into the head of the previous one).
-- Truncation at `Dmax` fades out over `kXfadeMs`; it is not a click and not a boundary
+- Truncation at `Dmax` fades out over the voice's `xfade`; it is not a click and not a boundary
   cut.
 - Buffer `G[k]` is live from `kT` until voice `k+1` finishes reading it, at most
   `(k+5)T` → a ring of `kNumGenBuffers = 6` covers it with a spare. That margin holds
@@ -158,7 +158,7 @@ Both modes share these rules:
    recycles slot `k mod kNumGenBuffers`; the `6T` lifetime margin only holds while `T` is
    constant. After a large shrink, a voice spawned under the old `T` can still be reading
    a slot that is due for reuse. Rule: opening a generation retires — with an
-   `kXfadeMs` fade — every voice that reads or writes the slot being recycled. Voices
+   `xfade` fade — every voice that reads or writes the slot being recycled. Voices
    never outlive their source; this subsumes the "pool full" steal.
 3. **Convergence after a shrink.** At effective rate `>= 1` the recycle preserves content
    length, so circulating material longer than the new `Dmax = min(4·T_new,
@@ -252,9 +252,30 @@ pitch-bends together, all generations at once.
 
 ## Click protection
 
-`kXfadeMs = 8` (constant; expose later if useful). Raised-cosine envelope per voice,
-evaluated per sample as a pure function of the voice's current state — never a latched
-countdown, which would be wrong as soon as the rate moved:
+The fade length is **proportional to what is being faded**, not a fixed millisecond value,
+so it stays sane from a 20 s wash down to a 10 ms flutter. Latched once per voice at spawn
+(so a mid-flight rate change cannot make the envelope jump):
+
+```
+D_est  = L[src] / r                                   // this repetition's duration
+xfade  = clamp(kXfadePct * min(T, D_est), kXfadeMinMs, kXfadeMaxMs)
+xfade  = min(xfade, D_est / 2)                        // must fit twice, in and out
+// kXfadePct 5 %, kXfadeMinMs 0.25 ms, kXfadeMaxMs 8 ms
+```
+
+The ceiling binds for anything longer than ~160 ms, so normal delays keep the 8 ms fade
+they would have had. Below that it scales: `T = 10 ms` gives 0.5 ms, a real ramp instead
+of a fade that swallows the whole period. `D_est` in the `min` handles the other end —
+at `r = 4` the repetition is `T/4` long, and the fade tracks the repetition rather than
+the period. The `D_est / 2` clamp guarantees the envelope still reaches unity; if a later
+rate change invalidates it, the envelope degrades to a rounded blip that never quite hits
+1, which is graceful rather than broken.
+
+The minimum delay time stays at 10 ms. With the fade scaled it is mechanically fine, and
+a 10 ms period under varispeed is a flutter/comb effect — odd, but a legitimate one.
+
+Raised-cosine envelope per voice, evaluated per sample as a pure function of the voice's
+current state — never a latched countdown, which would be wrong as soon as the rate moved:
 
 ```
 inSamples  = elapsed                                  // output samples since spawn
@@ -471,6 +492,9 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - speed sweep is sample-smoothed: all voices see the same `r` at the same sample index;
   output has no step discontinuity larger than the signal itself
 - positional envelope: a rate drop mid-fade-out un-fades instead of latching to silence
+- fade scaling: at T = 10 ms the envelope still reaches unity and the repetition has a
+  real ramp at both ends; at T = 1 s the fade is the 8 ms ceiling; at r = 4 it tracks the
+  repetition, not the period
 - BEND with `speed = 4` (effective rate up to 16) never reads past a source's written
   length — the clamp holds it at the writer's edge
 - sync: a division change and a continuous tempo ramp both re-grid (REGRID) and glide
@@ -487,47 +511,43 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 
 Behaviour — these change what the plugin does and should be settled before phase 2:
 
-1. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
-   period, so repeats become fade-shaped blips and `Dmax = 40 ms`. Either scale the fade
-   (`xfade = min(8 ms, T/8)`), raise the minimum time to ~50 ms, or both — the generation
-   model is a delay, not a comb filter, and it should not pretend otherwise.
-2. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
+1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-3. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-4. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
+3. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
    block and keeps `forceFade` permanently on, so every generation gets faded. Needs a
    threshold ("ignore changes under ~0.5 %") or REGRID needs to treat slow automation as
    a BEND-style slew.
-5. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
+4. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
    true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
    finite number (e.g. `Dmax × a few generations`) or report a large constant.
 
 Quality and tuning — decide by ear during phases 3–5:
 
-6. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+5. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
    `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
    ~−6 dBFS) or it colours everything, not just runaway.
-7. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+6. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-8. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+7. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-9. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+8. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-10. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+9. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-11. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+10. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-12. **Factory presets** — none planned. The parameter set is small enough that a handful
+11. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-13. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+12. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
