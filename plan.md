@@ -170,7 +170,20 @@ Both modes share these rules:
 5. **Fades cannot be skipped across a change.** The unity bypass assumes the next
    generation is contiguous with the current one, which stops being true the moment `T`
    moves. Voices spawned in the two periods following a `T` change carry a `forceFade`
-   flag.
+   flag, released two generations after the last real change.
+6. **What counts as a change — the deadband.** A host hands over an automated `time_ms`
+   every block, and a flat lane can still arrive with float jitter (500.0 ms, then
+   500.0000001 ms). Testing `T_new != T_previous_block` is therefore true almost always,
+   `forceFade` never releases, and the bypass never re-engages. The symptom is narrow but
+   real: **at `speed = 1` with time automation running, a clean digital delay grows an
+   amplitude dip at every repetition** — tremolo at the delay rate. At any other speed the
+   fades are on regardless (`r != 1` defeats the bypass), and in BEND `m != 1` during a
+   ramp defeats it too, so this is a REGRID-at-unity problem only.
+
+   Rule: compare against the **last latched** `T`, never the previous block's, so a slow
+   ramp still accumulates into a detected change instead of hiding under the threshold
+   forever. Treat `|ΔT| < max(0.5 %, 1 ms)` as no change at all — no re-latch, no
+   `forceFade`. Anything larger is a real change and takes the path above.
 
 ### REGRID
 
@@ -501,6 +514,9 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   (BEND) without clicks
 - sync phase: boundaries fall on `ppq = k · divPPQ` within a sample, for straight, dotted
   and triplet divisions, at 120 and 143 bpm (fractional period), across a bar line
+- deadband: a flat automation lane with float jitter never sets forceFade, so at speed 1
+  the output has no periodic dip; a slow ramp of 0.1 %/block is still detected once it
+  accumulates past the threshold
 - sync repeatability: rendering bars 5–9 in isolation produces the same samples as
   rendering bars 1–9 and slicing; a loop jump forces a boundary and drops no voice
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
@@ -517,37 +533,33 @@ Behaviour — these change what the plugin does and should be settled before pha
 2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-3. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
-   block and keeps `forceFade` permanently on, so every generation gets faded. Needs a
-   threshold ("ignore changes under ~0.5 %") or REGRID needs to treat slow automation as
-   a BEND-style slew.
-4. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
+3. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
    true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
    finite number (e.g. `Dmax × a few generations`) or report a large constant.
 
 Quality and tuning — decide by ear during phases 3–5:
 
-5. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+4. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
    `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
    ~−6 dBFS) or it colours everything, not just runaway.
-6. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+5. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-7. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+6. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-8. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+7. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-9. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+8. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-10. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+9. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-11. **Factory presets** — none planned. The parameter set is small enough that a handful
+10. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-12. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+11. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
