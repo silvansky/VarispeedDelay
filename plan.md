@@ -58,19 +58,32 @@ Per sample, for each active voice:
 v      = interp(src, pOut);  pOut += r          // this repetition, audible
 rec    = (fbType == Raw ? v * env               // recycled = the varispeed signal
                         : src[w])               // recycled = unity copy, no resampling
-dst[w] = softclip(eq(rec * feedback));  ++w
+dst[w] = softclip(eq(rec * feedback));  ++w     // assignment — see below
 wetSum += v * env
 ```
 
-and once per sample for the block:
+and once per sample for the block, on the newest generation only:
 
 ```
-G[newest][n] += x[n]                            // n = period counter, 0 ≤ n < T
-out[n]        = x[n] * dryGain + wetSum * wetGain
+G[k][n] += x[n]                                 // n = period counter, 0 ≤ n < T
+out[n]   = x[n] * dryGain + wetSum * wetGain
 ```
 
-At the boundary (`n == T`): open `G[k]`, spawn voice `k` (`src = k-1`, `dst = k`),
-`n = 0`, latch new `T` / feedback type. Voices retire on their own schedule.
+At the boundary: open `G[k]`, spawn voice `k` (`src = k-1`, `dst = k`), `n = 0`, latch
+the new feedback type. Voices retire on their own schedule. The very first period has no
+source, so it only records input; the first voice spawns at the second boundary.
+
+**Generations are never memset.** Each generation buffer has exactly one writing voice,
+and its `w` advances in lockstep with the period counter `n`, so `dst[w] = …` is an
+assignment and the input `+=` lands on a slot the voice just wrote (or on `= x[n]` when
+the voice is inactive). Readers are bounded by `writtenLen[k]`, so stale samples past
+the write head are never audible. Clearing instead would mean a 3.8 MB memset on the
+audio thread at every boundary — at `T = 10 ms` that is a memset every 10 ms.
+
+Timing note to document in USAGE: an input event at offset `n` inside a period returns
+after `T + n(1/r - 1)`, not exactly `T`. The *grid* is `T`; within a repetition the
+material is compressed toward the boundary at `r > 1` and stretched away from it at
+`r < 1`. Inherent to chunked varispeed.
 
 Why this works:
 
@@ -414,14 +427,63 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 
 ## Open questions
 
-1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
+Behaviour — these change what the plugin does and should be settled before phase 2:
+
+1. **Sync phase.** Periods of the right *length* are not the same as periods on the
+   host's grid. Because a repetition starts at its period boundary and (at `r > 1`)
+   material compresses toward it, the boundary phase is audible — a synced delay whose
+   boundaries float will not land with the music. Options: free-running (boundaries fall
+   where they fall), or align boundaries to the host PPQ grid like SiLooper's bar sync,
+   which means one short or long period when locking on. Leaning: PPQ-aligned in sync
+   mode, free-running in free mode.
+2. **EQ placement — it is currently off by one repetition.** The EQ sits on the recycle
+   write, but the input enters the generation buffer *un*-EQ'd, so repetition 1 is
+   unfiltered, repetition 2 has EQ¹, repetition N has EQ^(N-1). Moving the EQ onto the
+   voice's read tap fixes it (rep N = EQ^N) at the cost of filtering the wet output
+   directly. Related: in Stable mode should the EQ accumulate at all, or should every
+   repetition be filtered exactly once? Cumulative is the classic "repeats get darker"
+   behaviour; once-only is more literally "stable".
+3. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
+   period, so repeats become fade-shaped blips and `Dmax = 40 ms`. Either scale the fade
+   (`xfade = min(8 ms, T/8)`), raise the minimum time to ~50 ms, or both — the generation
+   model is a delay, not a comb filter, and it should not pretend otherwise.
+4. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+5. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+6. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
+   block and keeps `forceFade` permanently on, so every generation gets faded. Needs a
+   threshold ("ignore changes under ~0.5 %") or REGRID needs to treat slow automation as
+   a BEND-style slew.
+7. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
+   true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
+   finite number (e.g. `Dmax × a few generations`) or report a large constant.
+
+Quality and tuning — decide by ear during phases 3–5:
+
+8. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+   `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
+   ~−6 dBFS) or it colours everything, not just runaway.
+9. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-4. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
-5. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
-   per-channel speed offset would be a nice later addition.
+10. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+    and this engine resamples the *same material* once per repetition, so the loss
+    compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
+    defect (mud). Catmull-Rom if it is the latter.
+11. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+    zipper at ±12 dB and smooth the dB values if needed.
+12. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+    per-channel speed offset would be a nice later addition.
+
+Scope:
+
+13. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+    what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
+    the max free-mode delay above 48 kHz is the cheap answer.
+14. **Factory presets** — none planned. The parameter set is small enough that a handful
+    of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
+    plugin's character better than the defaults alone.
+15. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+    input write and pin feedback at 1. Worth a button later.
