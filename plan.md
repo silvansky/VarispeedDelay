@@ -94,9 +94,10 @@ starts one full period behind, so the gap only grows (`gap(t) = (1-r)(t - kT) + 
 At `r > 1` the source is always complete before it is needed, because the writing voice
 finished in `T/r < T`.
 
-Guard for the one unsafe case — a large upward speed jump while a voice is mid-flight:
-if `pOut` reaches the source's written length while the source is still open, the voice
-**underruns**: fade out over `kXfadeMs` and retire it. Never read unwritten samples.
+Guard for the one unsafe case — an upward speed move (or a BEND shorten) while a voice is
+mid-flight: `pOut` is clamped to `writtenLen(src) - 1` whenever the source is still open.
+Never read unwritten samples. The clamp is self-resolving, not fatal — see
+*Speed changes*.
 
 ### Lengths and caps
 
@@ -194,21 +195,67 @@ Interactions:
 - The unity-fade bypass tests the **effective** rate `r · m`, so fades engage
   automatically during a bend and switch off again when it settles.
 - A fast shorten drives `m > 1`, which can make a chasing voice overtake a source that is
-  still being written → the existing underrun guard fades and retires it. Losing the
-  oldest tail voices on a violent time jump is acceptable and audible as intended.
+  still being written → the `pOut` clamp from *Speed changes* holds it at the writer's
+  edge until the writer closes the buffer. No voice is lost to a time move.
 - In sync mode BEND glides into a new division instead of locking to it instantly; that
   is the point of the mode, and REGRID remains the default for grid-accurate work.
 - Tempo ramps in sync mode produce a continuous, correct tape-slide for free.
 
+## Speed changes
+
+The speed knob is the tape motor, so unlike time it has no two modes: **`r` is global and
+every sounding repetition follows it**. Turn it while the delay rings and the whole tail
+pitch-bends together, all generations at once.
+
+- `r` is smoothed per **sample** (`kSpeedGlideMs = 20`), computed once in the engine loop
+  and handed to every voice, so voices never diverge. Longer glide times read as motor
+  inertia — worth trying 60–80 ms in phase 3. Preset buttons go through the same
+  smoother, so `1 → 4` is a fast chirp rather than a step.
+- **The grid does not move.** Spacing stays `T`; only the pitch and the length of each
+  repetition change. Raising `r` mid-repetition makes the current repeat finish early and
+  opens a gap; lowering it stretches the repeat into the following ones. This is the main
+  perceptual difference from a time change, which moves the grid and leaves pitch alone.
+- **Raw mode records the sweep.** The bend is baked into the recycled signal, so later
+  generations replay the swept material and sweep it again — a knob move leaves a
+  permanent, compounding trace in the loop. In Stable mode the recycle tap is a unity copy
+  and never accumulates: the sweep is heard on every repetition but leaves no trace.
+- **Upward moves collide with the chasing read.** At `r < 1` voice `k+1` reads `G[k]`
+  while voice `k` writes it; pushing `r` up makes the reader overtake the writer. Rather
+  than kill the repetition, `pOut` clamps to the writer's edge: the voice rides the newest
+  written sample at the writer's pace — no click (samples stay contiguous), just a
+  temporary lock to unity rate. It resolves itself quickly, because the same speed
+  increase makes the writing voice finish its own source sooner and close the buffer,
+  after which the reader runs free. Only buffer-slot reuse ever retires a voice.
+- **Envelopes must be positional, not counters.** With `r` moving, a latched "fade out in
+  N samples" counter is wrong the moment the rate changes. Fades are computed per sample
+  from the current state — see *Click protection*.
+- **`Dmax` is measured in output samples** (elapsed voice duration), so it is unaffected
+  by rate changes; only the content-end distance `(L[src] - pOut) / r` moves.
+- After the rate settles at exactly 1.0, generation joins are still not contiguous (the
+  content was recorded under a moving rate), so the unity-fade bypass stays suspended for
+  two generations, same `forceFade` rule as a time change.
+
 ## Click protection
 
-`kXfadeMs = 8` (constant; expose later if useful). Raised-cosine envelope per voice:
+`kXfadeMs = 8` (constant; expose later if useful). Raised-cosine envelope per voice,
+evaluated per sample as a pure function of the voice's current state — never a latched
+countdown, which would be wrong as soon as the rate moved:
+
+```
+inSamples  = elapsed                                  // output samples since spawn
+toContent  = (L[src] - pOut) / max(rEff, tiny)        // output samples left in the source
+toCap      = Dmax - elapsed                           // output samples left under the cap
+env        = raisedCos(min(inSamples, toContent, toCap) / xfade)   // clamped to [0,1]
+```
 
 - fade **in** over the first `xfade` samples of the voice
-- fade **out** over the last `xfade` samples before the voice's end, whichever comes
-  first: source content end (`pOut → L[src]`), the `Dmax` clamp, an underrun, or a steal
-- **skip entirely when `|r - 1| < 1e-4`** — at unity the next generation is contiguous
-  with the current one and any fade would add periodic amplitude ripple
+- fade **out** over the last `xfade` samples before whichever end arrives first — source
+  content end, the `Dmax` clamp, or a slot steal (which forces `env` down over `xfade`)
+- because it is positional, a fade-out that started can un-fade if the rate drops and the
+  end recedes; that is correct, not a glitch
+- **skip entirely when `|rEff - 1| < 1e-4` and no `forceFade` flag is set** — at unity the
+  next generation is contiguous with the current one and any fade would add periodic
+  amplitude ripple
 
 The envelope is applied to the wet tap always, and to the recycle tap **only in Raw
 mode**, where the recycled signal is the resampled one and its edges must not click on
@@ -237,10 +284,9 @@ supports two voices sounding at once.
 Speed preset buttons (1/4, 1/2, 1, 2, 4) write `speed` via `setValueNotifyingHost`, so
 they are just shortcuts — no extra parameter.
 
-Smoothing (`juce::SmoothedValue`, ~20 ms): speed (gives tape-style pitch glide),
-feedback, dry, wet. `fb_type` latches at period boundaries; `time` is handled by the
-`time_mode` path above, not by a generic smoother. A voice keeps using the smoothed
-global rate, so a speed move bends all sounding repetitions together.
+Smoothing (`juce::SmoothedValue`): speed per sample (`kSpeedGlideMs = 20`, see *Speed
+changes*), feedback / dry / wet per block are fine at ~20 ms. `fb_type` latches at period
+boundaries; `time` is handled by the `time_mode` path above, not by a generic smoother.
 
 ## Sync mode
 
@@ -318,13 +364,13 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    raw/stable recycle, dry/wet. Fixed free-mode time, no EQ, no fades. *Done when:* at 1×
    it is a clean digital delay; at 2× repeats pitch up cumulatively (raw) or stay put
    (stable); at 0.5× repeats overlap instead of cutting off.
-3. **Caps + click protection + smoothing** — `Dmax` clamp, underrun guard, buffer-slot
-   stealing, live `T` changes in both time modes (REGRID snap, BEND slew + factor `m`),
-   fades, unity-rate bypass + `forceFade`, smoothed speed/feedback, `tanh` soft clip.
-   *Done when:* no clicks at any speed, no zipper on knob sweeps, fast 0.25→4 sweeps never
-   read unwritten samples, a full sweep of the time knob while sounding stays clean in
-   both modes and audibly bends in BEND, `fb = 2` saturates instead of exploding.
-   Tune `kBendUp` / `kBendDown` by ear here.
+3. **Caps + click protection + live knob moves** — `Dmax` clamp, `pOut` clamp against the
+   writer, buffer-slot stealing, `T` changes in both time modes (REGRID snap, BEND slew +
+   factor `m`), per-sample speed smoothing, positional fade envelope, unity bypass +
+   `forceFade`, `tanh` soft clip. *Done when:* no clicks at any speed, no zipper on knob
+   sweeps, a 0.25→4 speed sweep bends the whole tail without dropping a repetition, a full
+   time-knob sweep stays clean in both modes and audibly bends in BEND, `fb = 2` saturates
+   instead of exploding. Tune `kSpeedGlideMs` / `kBendUp` / `kBendDown` by ear here.
 4. **Sync** — playhead, divisions up to 2 bars, standalone fallback BPM. *Done when:*
    repeats stay locked through division changes and tempo ramps.
 5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
@@ -353,8 +399,14 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 - BEND: `T_eff` never moves faster than the rate limits, `m` stays inside [0.25, 4], and
   `m` returns to exactly 1 once `T_eff == T_target`; a 20 s → 200 ms jump takes the
   predicted ≈ 6.6 s and stays click-free throughout
+- speed sweep 0.25 → 4 with repeats overlapping: no voice reads past its source's written
+  length, no voice is retired by the clamp, and every repetition that was sounding before
+  the sweep is still sounding after it
+- speed sweep is sample-smoothed: all voices see the same `r` at the same sample index;
+  output has no step discontinuity larger than the signal itself
+- positional envelope: a rate drop mid-fade-out un-fades instead of latching to silence
 - BEND with `speed = 4` (effective rate up to 16) never reads past a source's written
-  length — the underrun guard fires instead
+  length — the clamp holds it at the writer's edge
 - sync: a division change and a continuous tempo ramp both re-grid (REGRID) and glide
   (BEND) without clicks
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
