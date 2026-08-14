@@ -516,7 +516,10 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 │  EQ [ON]   ▮ ▮ ▮ ▮ ▮ ▮ ▮      (7 vertical sliders, ±12 dB)   │
 │            63 160 400 1k 2k5 6k3 16k                        │
 ├─────────────────────────────────────────────────────────────┤
-│  ( DRY )   ( WET )                             build date   │
+│  ( DRY )   ( WET )                                          │
+├─────────────────────────────────────────────────────────────┤
+│ [?] Delay time — free 10 ms…20 s   48000 Hz | 512 smp | ~10.7│
+│                                    ms | v0.1.0 (2026-08-14) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -525,6 +528,50 @@ readout follows `T_eff` while it slews, so the glide is visible. Speed preset bu
 highlight when `speed` is within 1 cent of the preset. The optional repetition
 view is the one place the overlap becomes legible — stacked bars, one per live voice,
 length `D[k]`, spaced `T` apart, on a 30 Hz timer.
+
+### Footer
+
+Same three-part footer as SiLooper (`PluginEditor.cpp:229`), 20 px tall, claimed first in
+`resized()` via `area.removeFromBottom(20)` so every other section lays out above it.
+All three parts are 10 pt in `0xff888899`.
+
+| part | width | content |
+|---|---|---|
+| `helpButton` | 20 px, then 4 px gap | a `?` badge, `0xff333344` on `0xff888899`. No click action — it exists to advertise the hover help, and carries `help` = "Hover over controls for help" itself |
+| `contextHelpLabel` | ~260 px, left | help text for whatever the mouse is over |
+| `footerLabel` | remainder, right | audio config + version |
+
+**Context help.** Each control gets `comp.getProperties().set("help", "…")` at construction.
+The editor calls `addMouseListener(this, true)` so it receives child events, and
+`mouseEnter` walks up from `e.eventComponent` through parents until it finds a component
+carrying a `help` property — so a knob inside a panel inherits the panel's text if it has
+none of its own. `mouseExit` clears the label only when `e.eventComponent == this`, i.e.
+when the mouse actually leaves the editor rather than crossing between children.
+
+Help strings to write: time (+ free/sync, division), time mode, spacing, speed, each preset
+button, feedback, feedback type, clip, EQ on, each band, dry, wet.
+
+SiLooper also *rewrites* one help string every timer tick so it can include live numbers
+(latency = buffer + offset). The equivalent worth doing here is the time and speed knobs,
+whose real behaviour is not obvious from the value alone — e.g. "1.20 s period · rep 1
+lasts 2.40 s · 2 repeats overlapping" from `T`, `D[k]` and the live voice count.
+
+**Footer text**, rebuilt on the editor timer (10 Hz is plenty; it shares the 30 Hz timer if
+the repetition view exists):
+
+```
+48000 Hz | 512 smp | ~10.7 ms                          // getSampleRate(), getBlockSize()
+[| In: <device> | Out: <device>]                       // #if JucePlugin_Build_Standalone,
+                                                       // StandalonePluginHolder::getInstance()
+| v0.1.0 (2026-08-14)                                  // JucePlugin_VersionString,
+                                                       // VARISPEEDDELAY_BUILD_DATE
+```
+
+The build-date macro already exists — `cmake/BuildDate.h.in` generates it every build and
+the placeholder editor prints it. At 800 px wide the fixed parts fit comfortably; in
+standalone with two long device names they will not, so give the labels
+`setMinimumHorizontalScale(1.0f)` and let the context help column shrink rather than
+letting the version squeeze.
 
 ## Thread safety / RT rules
 
@@ -557,7 +604,9 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
 5. **EQ** — 7-band biquads, per-tap voice state, bypass, EQ^N accumulation with rep 1
    already filtered, identical in both feedback modes.
 6. **UI** — LookAndFeel, layout, speed presets, the four switches (sync, time mode,
-   spacing, feedback type) plus CLIP, readouts; optional repetition view.
+   spacing, feedback type) plus CLIP, readouts, footer with hover help; optional
+   repetition view. *Done when:* every control has a help string, the footer tracks
+   sample rate and block size changes, and the standalone shows its device names.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
    test, sample rates 44.1/48/96, block sizes 32/512/2048, mono and stereo. Write
    README.md / USAGE.md / CLAUDE.md.
