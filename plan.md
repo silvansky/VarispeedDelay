@@ -148,7 +148,9 @@ doppler-bends everything that is sounding, like a tape delay.
 Both modes share these rules:
 
 1. **The period ends at the current effective `T`.** If `n >= T_eff` the boundary fires
-   immediately; otherwise the period runs to the new, longer `T_eff`. Response is bounded
+   immediately; otherwise the period runs to the new, longer `T_eff`. In sync mode the
+   boundary comes from the PPQ grid instead (see *Sync mode*), which lands at the same
+   place once locked and produces one irregular period while locking on. Response is bounded
    by one *new* period, so shortening a 20 s delay to 200 ms reacts in 200 ms — never
    latch to the old boundary. `L[k]` is `max(samples of input actually written, voice
    write length)`, so a short period just yields a short generation.
@@ -303,11 +305,44 @@ boundaries; `time` is handled by the `time_mode` path above, not by a generic sm
 
 ## Sync mode
 
-`AudioPlayHead::PositionInfo` → bpm + time signature. `T = samplesPerBeat * beatsForDiv`,
-recomputed per block. No host transport (standalone) → fall back to an internal BPM field
-like SiLooper's, or to free mode. A division change or a tempo ramp is just a `T` change
-and takes the path in *Delay time changes*; buffers are never resized (they are allocated
-at `kMaxRepSeconds`), only the period length moves.
+`AudioPlayHead::PositionInfo` → bpm, time signature, `ppqPosition`, `isPlaying`.
+`T = samplesPerBeat * beatsForDiv`, recomputed per block. A division change or a tempo
+ramp is just a `T` change and takes the path in *Delay time changes*; buffers are never
+resized (they are allocated at `kMaxRepSeconds`), only the period length moves.
+
+### Boundary phase — anchored to the host grid
+
+Periods of the right *length* are not the same as periods on the host's grid, and in this
+engine the difference is audible: a repetition begins at its period boundary, and material
+is compressed toward that boundary at `r > 1`. Boundaries at an arbitrary phase cut notes
+mid-sustain, and each half then repeats a period apart. Boundaries on the musical grid
+land where notes tend to *begin*, so a note stays whole inside one generation.
+
+So in sync mode the boundary is derived from the transport, not from a sample counter: a
+boundary fires when `floor(ppq / divPPQ)` increments, where `divPPQ` is the division in
+quarter-notes. Each block spans `[ppqStart, ppqEnd)`; any crossing inside it is converted
+to a sample offset and the block is split there — the same technique as SiLooper's
+`checkBarBoundary()`. Free mode keeps the plain sample counter.
+
+- **Anchor at ppq 0, not at the bar.** Divisions that tile the bar align with bar lines
+  anyway; dotted and triplet divisions stay regular instead of getting a stunted period
+  at every bar line.
+- **Locking on** (transport start, division change, sync toggled on) ends the current
+  period at the next grid crossing, which makes one short or long generation. This is the
+  existing "period ends at the current `T_eff`" rule and the existing `forceFade` rule —
+  no new machinery.
+- **Locate, rewind, loop jump**: `ppq` moves discontinuously. Detect a jump (`|ppqStart −
+  expected|` beyond a tolerance) and force a boundary immediately; voices in flight are
+  untouched and ring out over the seam.
+- **Transport stopped**: fall back to free-running at the last known tempo and re-anchor
+  on the next start. Standalone with no host transport uses an internal BPM field like
+  SiLooper's.
+- **Tempo ramps** move the boundaries with the tempo map for free, and the resulting
+  period-length wobble feeds BEND's `m = 1 - dT` as a correct tape slide.
+
+Payoff beyond "it lines up": the result is repeatable. Playback from any bar, a loop, and
+an offline bounce all produce the same repetitions, and two instances agree with each
+other.
 
 ## Graphic EQ
 
@@ -384,8 +419,10 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    sweeps, a 0.25→4 speed sweep bends the whole tail without dropping a repetition, a full
    time-knob sweep stays clean in both modes and audibly bends in BEND, `fb = 2` saturates
    instead of exploding. Tune `kSpeedGlideMs` / `kBendUp` / `kBendDown` by ear here.
-4. **Sync** — playhead, divisions up to 2 bars, standalone fallback BPM. *Done when:*
-   repeats stay locked through division changes and tempo ramps.
+4. **Sync** — playhead, divisions up to 2 bars, PPQ-anchored boundaries with sample-
+   accurate block splitting, jump/stop handling, standalone fallback BPM. *Done when:*
+   repeats land on the grid, survive division changes and tempo ramps, and a bounce
+   matches what was auditioned from any start point.
 5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
 6. **UI** — LookAndFeel, layout, speed presets, readouts; optional repetition view.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
@@ -422,6 +459,10 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   length — the clamp holds it at the writer's edge
 - sync: a division change and a continuous tempo ramp both re-grid (REGRID) and glide
   (BEND) without clicks
+- sync phase: boundaries fall on `ppq = k · divPPQ` within a sample, for straight, dotted
+  and triplet divisions, at 120 and 143 bpm (fractional period), across a bar line
+- sync repeatability: rendering bars 5–9 in isolation produces the same samples as
+  rendering bars 1–9 and slicing; a loop jump forces a boundary and drops no voice
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
 - EQ: flat with all bands at 0 dB; +12 dB band raises that bin by ~12 dB per repetition
 
@@ -429,61 +470,54 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 
 Behaviour — these change what the plugin does and should be settled before phase 2:
 
-1. **Sync phase.** Periods of the right *length* are not the same as periods on the
-   host's grid. Because a repetition starts at its period boundary and (at `r > 1`)
-   material compresses toward it, the boundary phase is audible — a synced delay whose
-   boundaries float will not land with the music. Options: free-running (boundaries fall
-   where they fall), or align boundaries to the host PPQ grid like SiLooper's bar sync,
-   which means one short or long period when locking on. Leaning: PPQ-aligned in sync
-   mode, free-running in free mode.
-2. **EQ placement — it is currently off by one repetition.** The EQ sits on the recycle
+1. **EQ placement — it is currently off by one repetition.** The EQ sits on the recycle
    write, but the input enters the generation buffer *un*-EQ'd, so repetition 1 is
    unfiltered, repetition 2 has EQ¹, repetition N has EQ^(N-1). Moving the EQ onto the
    voice's read tap fixes it (rep N = EQ^N) at the cost of filtering the wet output
    directly. Related: in Stable mode should the EQ accumulate at all, or should every
    repetition be filtered exactly once? Cumulative is the classic "repeats get darker"
    behaviour; once-only is more literally "stable".
-3. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
+2. **Short delay times.** At `T = 10 ms` (480 samples) an 8 ms fade is most of the
    period, so repeats become fade-shaped blips and `Dmax = 40 ms`. Either scale the fade
    (`xfade = min(8 ms, T/8)`), raise the minimum time to ~50 ms, or both — the generation
    model is a delay, not a comb filter, and it should not pretend otherwise.
-4. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
+3. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-5. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+4. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-6. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
+5. **Time automation deadband.** A host automating `time_ms` continuously re-grids every
    block and keeps `forceFade` permanently on, so every generation gets faded. Needs a
    threshold ("ignore changes under ~0.5 %") or REGRID needs to treat slow automation as
    a BEND-style slew.
-7. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
+6. **Tail length.** `getTailLengthSeconds()` is 0.0 in the skeleton. With `fb ≥ 1` the
    true tail is infinite; hosts use this to truncate offline bounces. Pick a defensible
    finite number (e.g. `Dmax × a few generations`) or report a large constant.
 
 Quality and tuning — decide by ear during phases 3–5:
 
-8. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
+7. **Soft clip transparency.** A bare `tanh` already compresses ~2.4 dB at full scale, so
    `fb = 1` would not be clean. Needs a threshold/knee (clip toward ±2, soft only above
    ~−6 dBFS) or it colours everything, not just runaway.
-9. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+8. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-10. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
+9. **Interpolation and generational loss.** Linear interpolation loses HF on every pass,
     and this engine resamples the *same material* once per repetition, so the loss
     compounds — the tail darkens even with a flat EQ. That may be a feature (tape) or a
     defect (mud). Catmull-Rom if it is the latter.
-11. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
+10. **EQ gain smoothing** — dragging a band recomputes coefficients per block; check for
     zipper at ±12 dB and smooth the dB values if needed.
-12. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+11. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
     per-channel speed offset would be a nice later addition.
 
 Scope:
 
-13. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
+12. **Memory shape** — allocate per actual channel count (halves it in mono) and decide
     what to do at 96/192 kHz, where the fixed 6 × 20 s pool reaches 92/184 MB. Clamping
     the max free-mode delay above 48 kHz is the cheap answer.
-14. **Factory presets** — none planned. The parameter set is small enough that a handful
+13. **Factory presets** — none planned. The parameter set is small enough that a handful
     of APVTS states (clean slapback, octave-down wash, runaway tape) would carry the
     plugin's character better than the defaults alone.
-15. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
+14. **Freeze / hold** — not requested, but the architecture gives it almost free: mute the
     input write and pin feedback at 1. Worth a button later.
