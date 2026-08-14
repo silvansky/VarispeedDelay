@@ -1,0 +1,2 @@
+#pragma once
+#define VARISPEEDDELAY_BUILD_DATE "@BUILD_DATE@"

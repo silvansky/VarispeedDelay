@@ -1,0 +1,7 @@
+build/
+.claude/
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+CMakeUserPresets.json
+compile_commands.json
