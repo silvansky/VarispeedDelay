@@ -8,7 +8,8 @@ a different tape speed — pitch and duration change together.
 - feedback 0–2, raw (cumulative varispeed) or stable (one-shot varispeed) recycling
 - 7-band graphic EQ in the feedback path, ±12 dB, bypassable
 - separate dry and wet knobs
-- short crossfades at repetition boundaries for click protection
+- slow repetitions overlap the following ones, never cut off at the period boundary
+- short crossfades at repetition edges for click protection
 
 See `plan.md` for the design and `CLAUDE.md` for build instructions.
 

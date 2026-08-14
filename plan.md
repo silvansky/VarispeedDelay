@@ -3,6 +3,8 @@
 Delay where every repetition is re-played at a different tape speed: pitch and duration
 change together. Two feedback topologies (cumulative / one-shot), a 7-band graphic EQ in
 the recycle path, click protection via short fades at each repetition boundary.
+Repetitions slower than the delay time overlap the following ones — they are never cut
+short at the period boundary.
 
 ## Status
 
@@ -23,66 +25,121 @@ Run: `open build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app`
 
 ## Core model
 
-A **period** = the delay time `T` (samples). The engine keeps two loop buffers of
-`maxDelaySamples` and ping-pongs them once per period.
-
-- `A` — content circulating now. Played back at rate `r` (the speed knob) by one voice.
-- `B` — being filled during this period at rate 1. Becomes `A` at the next boundary.
-
-Per sample `n` in `[0, T)`:
+A **period** = the delay time `T` (samples). At every period boundary the engine opens a
+new **generation buffer** and spawns one **voice**. Voice `k` reads generation `G[k-1]`
+at the varispeed rate and writes its result into `G[k]`. Repetitions are therefore
+independent, overlapping playbacks — a repetition that lasts longer than `T` keeps
+sounding while the next one starts.
 
 ```
-v      = interp(A, p);  p += r          // varispeed tap  (voice output)
-u      = A[n]                           // unity tap      (stable recycle source)
-env    = fade(p, n)                     // click protection, see below
-wet    = v * env
-src    = (fbType == Raw ? wet : u * env)
-B[n]   = softclip(eq(src * feedback)) + x[n]
-out[n] = x[n] * dryGain + wet * wetGain
+period k-1          period k            period k+1          period k+2
+─────────────────── ─────────────────── ─────────────────── ───────────────
+input ─► G[k-1] ──► voice k ─► G[k] ──► voice k+1 ─► G[k+1] ──► …
+                    (rate r)            (rate r)
+                    wet out             wet out
+r = 0.5:            ████████████████████████████ rep 1 (2T)
+                                        ████████████████████████████ rep 2 (4T)
+                                                            ██████… rep 3
 ```
 
-At the boundary (`n == T`): `swap(A, B)`, clear `B`, `p = 0`, `n = 0`, latch new `T`/`r`.
+State per voice:
+
+| field | meaning |
+|---|---|
+| `src`, `dst` | generation buffer indices (`dst == src + 1`) |
+| `pOut` | read position in `src`, advances by `r` — the audible tap |
+| `w` | write position in `dst`, advances by 1 — the recycle tap |
+| `eq` | own 7-band filter state |
+| `env` | fade state (see below) |
+
+Per sample, for each active voice:
+
+```
+v      = interp(src, pOut);  pOut += r          // this repetition, audible
+rec    = (fbType == Raw ? v * env               // recycled = the varispeed signal
+                        : src[w])               // recycled = unity copy, no resampling
+dst[w] = softclip(eq(rec * feedback));  ++w
+wetSum += v * env
+```
+
+and once per sample for the block:
+
+```
+G[newest][n] += x[n]                            // n = period counter, 0 ≤ n < T
+out[n]        = x[n] * dryGain + wetSum * wetGain
+```
+
+At the boundary (`n == T`): open `G[k]`, spawn voice `k` (`src = k-1`, `dst = k`),
+`n = 0`, latch new `T` / feedback type. Voices retire on their own schedule.
 
 Why this works:
 
-- Input `x` enters `B` at rate 1 and is heard next period through the rate-`r` tap →
-  **repetition 1 is already varispeeded**, in both feedback modes.
-- Raw: the recycled signal is the varispeed tap, so repetition N is at `r^N`
-  (cumulative pitch, duration `T/r^N`), gain `fb^N`, EQ applied N times.
-- Stable: the recycled signal is the unity tap, so buffer content never accumulates
-  resampling — every repetition is the same audio at speed `r`, only gain and EQ
-  accumulate. Switching modes mid-flight is seamless (one line differs).
-- Repetition spacing stays `T` regardless of `r`, so the delay stays in time with the
-  track. `r > 1` → repeats are shorter than the period (gaps between blips).
-  `r < 1` → repeats are longer than the period and are cut at the boundary.
-- Memory is O(T), not O(T × repeats): all concurrent echo chains share one buffer,
-  because `resample(a + b) == resample(a) + resample(b)`.
+- Input enters the newest generation at rate 1 and is first heard through the next
+  voice's rate-`r` tap → **repetition 1 is already varispeeded**, in both feedback modes.
+- **Raw**: the recycled signal is the varispeed tap, so generation N is the previous one
+  resampled again — pitch `r^N`, duration `T/r^N`, gain `fb^N`, EQ applied N times.
+- **Stable**: the recycled signal is a unity-rate copy, so buffer content never
+  accumulates resampling. Every repetition is the same audio at speed `r`, same duration
+  `T/r`, only gain and EQ accumulate. Switching modes mid-flight is seamless — one
+  branch differs, and repetition 1 sounds the same either way.
+- Repetition spacing stays `T` regardless of speed, so the delay stays on the grid.
+  `r > 1` → repeats are shorter than the period (gaps between blips, no overlap).
+  `r < 1` → repeats are longer than the period and **overlap** the following ones.
 
-Consequences to accept (document in USAGE):
+### Chasing read
 
-- At `r > 1` the content of each period is compressed toward the period start, so an
-  event at offset `n` returns after `T - n(1 - 1/r)`, not exactly `T`. Inherent to
-  chunked varispeed; the grid stays locked to `T`.
-- At `r < 1` material past `T` in the buffer is never audible (slowing only pushes it
-  later), so buffers can stay exactly `T` long with no perceptual loss.
-- `fb > 1` grows without bound by design (tape runaway). A `tanh` soft clip in the
-  recycle path keeps it bounded and musical.
+At `r < 1`, voice `k+1` starts reading `G[k]` at the boundary while voice `k` is still
+writing it. This is safe: the reader advances at `r`, the writer at 1, and the reader
+starts one full period behind, so the gap only grows (`gap(t) = (1-r)(t - kT) + rT`).
+At `r > 1` the source is always complete before it is needed, because the writing voice
+finished in `T/r < T`.
+
+Guard for the one unsafe case — a large upward speed jump while a voice is mid-flight:
+if `pOut` reaches the source's written length while the source is still open, the voice
+**underruns**: fade out over `kXfadeMs` and retire it. Never read unwritten samples.
+
+### Lengths and caps
+
+`L[k]` = used length of `G[k]` = `max(T, samples written by voice k)`.
+Voice duration `D[k] = L[k-1] / r`, clamped to `Dmax = min(4 * T, kMaxRepSeconds)`.
+
+- The clamp factor 4 matches the minimum speed (0.25×), so the **first** repetition is
+  never truncated at any speed. Only later generations at extreme slow settings hit it
+  (0.25×: gen 1 = 4T natural, gen 2 would be 16T → clamped to 4T, i.e. each generation
+  zooms further into the head of the previous one).
+- Truncation at `Dmax` fades out over `kXfadeMs`; it is not a click and not a boundary
+  cut.
+- Buffer `G[k]` is live from `kT` until voice `k+1` finishes reading it, at most
+  `(k+5)T` → a ring of `kNumGenBuffers = 6` covers it with a spare.
+- Concurrent voices ≤ `Dmax / T + 1` = 5 → `kMaxVoices = 5`. If a `T` change would
+  exceed the pool, steal the oldest voice with a fast fade.
+- `fb > 1` grows without bound by design (tape runaway), and overlapping repeats sum on
+  top of that. A `tanh` soft clip per voice keeps the recycle path bounded and musical.
+
+### Memory
+
+`kNumGenBuffers (6) × kMaxRepSeconds (20 s) × 2 ch × 4 B` — 46 MB at 48 kHz, 92 MB at
+96 kHz, allocated once in `prepareToPlay`. `kMaxRepSeconds` must be ≥ the maximum delay
+time, so it is pinned to 20 s. (For comparison SiLooper allocates 8 × 60 s.) If this
+proves too heavy, drop the overlap factor to 3× or the max free-mode delay to 10 s.
 
 ## Click protection
 
-`kXfadeMs = 8` (constant; expose later if useful). Raised-cosine envelope:
+`kXfadeMs = 8` (constant; expose later if useful). Raised-cosine envelope per voice:
 
-- fade **in** over the first `xfade` samples of the voice (`p < xfade`)
-- fade **out** over the last `xfade` samples before whichever end comes first:
-  content end (`p >= T - xfade * r`, hit when `r > 1`) or period boundary
-  (`n >= T - xfade`, hit when `r < 1`)
-- skip entirely when `|r - 1| < 1e-4` — at unity the new buffer is contiguous with the
-  old one and any fade would add periodic amplitude ripple
+- fade **in** over the first `xfade` samples of the voice
+- fade **out** over the last `xfade` samples before the voice's end, whichever comes
+  first: source content end (`pOut → L[src]`), the `Dmax` clamp, an underrun, or a steal
+- **skip entirely when `|r - 1| < 1e-4`** — at unity the next generation is contiguous
+  with the current one and any fade would add periodic amplitude ripple
 
-The envelope is applied to the recycled signal too, so fades bake into the loop and no
-discontinuity ever accumulates. Optional refinement if boundary gaps are audible at
-`r < 1`: keep the retiring voice alive for `xfade` ms into the new period for a true
-overlapping crossfade (2 voices, equal-power).
+The envelope is applied to the wet tap always, and to the recycle tap **only in Raw
+mode**, where the recycled signal is the resampled one and its edges must not click on
+the next pass. The Stable recycle tap is a unity copy and needs no fade.
+
+Optional refinement if the joins are still audible: overlap the retiring voice with the
+new one by `xfade` ms (equal-power) instead of a plain fade — the voice pool already
+supports two voices sounding at once.
 
 ## Parameters (APVTS)
 
@@ -103,38 +160,39 @@ Speed preset buttons (1/4, 1/2, 1, 2, 4) write `speed` via `setValueNotifyingHos
 they are just shortcuts — no extra parameter.
 
 Smoothing (`juce::SmoothedValue`, ~20 ms): speed (gives tape-style pitch glide),
-feedback, dry, wet. `time` and `fb_type` latch at period boundaries only.
+feedback, dry, wet. `time` and `fb_type` latch at period boundaries only. A voice keeps
+using the smoothed global rate, so a speed move bends all sounding repetitions together.
 
 ## Sync mode
 
 `AudioPlayHead::PositionInfo` → bpm + time signature. `T = samplesPerBeat * beatsForDiv`,
 recomputed per block, latched at the next boundary. No host transport (standalone) →
 fall back to an internal BPM field like SiLooper's, or to free mode. Tempo changes take
-effect at the next boundary, so no mid-period buffer resize is ever needed.
-
-`T` changes: buffers are pre-allocated at `maxDelaySamples`; only the used length changes.
-If the new `T` is shorter than the current position, wrap immediately with a fade-out.
+effect at the next boundary, so no mid-period buffer resize is ever needed; voices
+already in flight finish under their old cap.
 
 ## Graphic EQ
 
 7 fixed ISO bands, ±12 dB each, RBJ peaking biquads, Q ≈ 1.4, TDF-II, stereo (two filter
-states per band). Hand-rolled POD biquad struct — **not** `juce::dsp::IIR::Coefficients`,
+states per band), one instance **per voice** (≤ 5 × 7 × 2 = 70 biquads worst case —
+negligible). Hand-rolled POD biquad struct — **not** `juce::dsp::IIR::Coefficients`,
 which is reference-counted and allocates on coefficient updates (forbidden on the audio
-thread). Coefficients recomputed only when a band value changes (dirty flag per band,
-compared against the cached APVTS value each block).
+thread). Coefficients are computed once per block into a shared POD set (dirty flag per
+band) and copied by value into each voice; only the filter *state* is per voice.
 
 Placement: recycle path, after feedback gain, before the soft clip. Applied once per
 repetition → the EQ curve accumulates across repeats, which is the point.
 
-`eq_on == false` bypasses the whole chain (and resets filter state on re-enable).
+`eq_on == false` bypasses the chain; filter state resets when a voice is spawned.
 
 ## Files to add
 
 ```
-src/DelayEngine.{h,cpp}    buffers, period logic, voice, fades, soft clip   (core)
+src/DelayEngine.{h,cpp}    generation buffers, voice pool, period logic, fades, clip
+src/Voice.h                per-voice state (header-only struct + inline tick)
 src/GraphicEQ.{h,cpp}      7 × stereo biquad, coefficient math
 src/LookAndFeel.{h,cpp}    dark knob/slider styling
-src/RepetitionView.{h,cpp} optional: visualizes repeats shrinking/growing on a timeline
+src/RepetitionView.{h,cpp} optional: repeats on a timeline, showing overlap
 ```
 
 `PluginProcessor` owns `DelayEngine`, builds the APVTS layout, caches raw parameter
@@ -159,14 +217,15 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Time knob shows ms/s in free mode and the division name in sync mode. Speed preset buttons
-highlight when `speed` is within 1 cent of the preset. 30 Hz timer only if the repetition
-view is built; otherwise attachments alone suffice.
+Time knob shows ms/s in free mode and the division name in sync mode. Speed preset
+buttons highlight when `speed` is within 1 cent of the preset. The optional repetition
+view is the one place the overlap becomes legible — stacked bars, one per live voice,
+length `D[k]`, spaced `T` apart, on a 30 Hz timer.
 
 ## Thread safety / RT rules
 
-- All buffers allocated in `prepareToPlay` (`2 × 20 s × 2 ch × 4 B` ≈ 15 MB @ 48 kHz,
-  31 MB @ 96 kHz — sized from `maxDelaySeconds * sampleRate`).
+- All buffers allocated in `prepareToPlay`; the voice pool is fixed size, no allocation
+  on spawn.
 - No allocation, locks or file I/O in `processBlock`; EQ coefficients written in place.
 - UI → audio communication only through APVTS raw pointers and `std::atomic` (relaxed).
 - `setLatencySamples(0)` — the engine adds none.
@@ -175,16 +234,17 @@ view is built; otherwise attachments alone suffice.
 
 1. **Parameters** — full APVTS layout, generic UI via attachments, host automation and
    state save/restore verified. *Done when:* every parameter shows up and persists.
-2. **Engine core** — ping-pong buffers, period counter, varispeed voice, raw/stable
-   recycle, dry/wet. Fixed free-mode time, no EQ, no fades. *Done when:* at 1× it is a
-   clean digital delay; at 2×/0.5× repeats pitch up/down cumulatively in raw and stay put
-   in stable.
-3. **Click protection + smoothing** — fades, unity-rate bypass, smoothed speed/feedback,
-   `tanh` soft clip. *Done when:* no clicks at any speed, no zipper on knob sweeps, `fb=2`
-   saturates instead of exploding.
+2. **Engine core** — generation ring, voice pool, period counter, varispeed tap,
+   raw/stable recycle, dry/wet. Fixed free-mode time, no EQ, no fades. *Done when:* at 1×
+   it is a clean digital delay; at 2× repeats pitch up cumulatively (raw) or stay put
+   (stable); at 0.5× repeats overlap instead of cutting off.
+3. **Caps + click protection + smoothing** — `Dmax` clamp, underrun guard, voice
+   stealing, fades, unity-rate bypass, smoothed speed/feedback, `tanh` soft clip.
+   *Done when:* no clicks at any speed, no zipper on knob sweeps, fast 0.25→4 sweeps
+   never read unwritten samples, `fb = 2` saturates instead of exploding.
 4. **Sync** — playhead, divisions up to 2 bars, boundary-latched `T`, standalone fallback
    BPM. *Done when:* repeats stay locked through tempo changes.
-5. **EQ** — 7-band biquads, bypass, accumulation across repeats.
+5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
 6. **UI** — LookAndFeel, layout, speed presets, readouts; optional repetition view.
 7. **Validation** — `auval -v aumf Vspd VSil`, pluginval strictness 8, Logic/Reaper smoke
    test, sample rates 44.1/48/96, block sizes 32/512/2048, mono and stereo. Write
@@ -196,19 +256,27 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 (the engine must not depend on `AudioProcessor`):
 
 - unity speed, zero feedback → output equals input delayed by exactly `T`
-- raw mode, `r = 2`, impulse in → impulses at `T`, `2T`, `3T` with lengths `T/2`, `T/4`…
-- stable mode → all repetitions bit-identical apart from `fb^N` gain
-- `fb = 2` stays finite (soft clip) over 60 s of noise
-- no NaN/denormal after speed sweeps; buffer indices never out of range
+- raw, `r = 2`, impulse in → impulses at `T`, `2T`, `3T`, lengths `T/2`, `T/4`, `T/8`
+- raw, `r = 0.5`, impulse in → repetition k starts at `kT` and lasts `2^k · T` until the
+  `Dmax` clamp; repetitions 1 and 2 are simultaneously non-zero (**overlap**)
+- stable → every repetition identical apart from `fb^N` gain, duration `T/r` for all
+- chasing read: `r = 0.25` for 60 s, assert no voice ever reads past its source's
+  written length; speed jump 0.25 → 4 mid-repetition retires voices instead of reading
+  stale samples
+- voice count never exceeds `kMaxVoices`; buffer indices always in range
+- `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
 - EQ: flat with all bands at 0 dB; +12 dB band raises that bin by ~12 dB per repetition
 
 ## Open questions
 
-1. **Spacing at `r != 1`** — plan fixes spacing at `T`. The alternative (spacing follows
-   the repetition length, `T/r^N`) gives accelerating/decelerating tape runaway. Worth a
-   later `SPACING [GRID|TAPE]` switch if the fixed grid feels tame.
-2. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
+   repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
+   and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
+2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+   it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
+   knob as the trim.
+3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-3. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
-4. **Stereo** — single shared read pointer for both channels (no width effect). A
+4. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
+5. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
    per-channel speed offset would be a nice later addition.
