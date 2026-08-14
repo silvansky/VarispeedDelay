@@ -126,36 +126,79 @@ proves too heavy, drop the overlap factor to 3× or the max free-mode delay to 1
 
 ## Delay time changes
 
-`T` is read every block. Changing it while the delay is sounding — free knob, sync
-division, or host tempo automation — goes through one path:
+`T` is read every block. Every source of change — free knob, sync division, host tempo
+automation — goes through the same path, and the `time_mode` switch picks the character:
+**REGRID** (default) snaps the grid and leaves the tail alone, **BEND** slews the time and
+doppler-bends everything that is sounding, like a tape delay.
 
-1. **The period ends at the new `T`.** If `n >= T_new` the boundary fires immediately;
-   otherwise the period simply runs to the new, longer `T`. Response is bounded by one
-   *new* period, so shortening a 20 s delay to 200 ms reacts in 200 ms — never latch to
-   the old boundary. `L[k]` is `max(samples of input actually written, voice write
-   length)`, so a short period just yields a short generation.
-2. **Voices in flight are not retimed.** They keep their rate, pitch and length and play
-   out under the cap they were spawned with. No doppler bend, no discontinuity — the
-   difference from a classic delay line, where moving the knob drags the read pointer.
-   The old tail keeps ringing on the old grid and decays under feedback while new
-   repetitions arrive on the new grid.
-3. **Buffer-slot stealing is what makes a big shrink safe.** Opening generation `k`
+Both modes share these rules:
+
+1. **The period ends at the current effective `T`.** If `n >= T_eff` the boundary fires
+   immediately; otherwise the period runs to the new, longer `T_eff`. Response is bounded
+   by one *new* period, so shortening a 20 s delay to 200 ms reacts in 200 ms — never
+   latch to the old boundary. `L[k]` is `max(samples of input actually written, voice
+   write length)`, so a short period just yields a short generation.
+2. **Buffer-slot stealing is what makes a big shrink safe.** Opening generation `k`
    recycles slot `k mod kNumGenBuffers`; the `6T` lifetime margin only holds while `T` is
    constant. After a large shrink, a voice spawned under the old `T` can still be reading
    a slot that is due for reuse. Rule: opening a generation retires — with an
    `kXfadeMs` fade — every voice that reads or writes the slot being recycled. Voices
    never outlive their source; this subsumes the "pool full" steal.
-4. **Convergence after a shrink.** At `r >= 1` the recycle preserves content length, so
-   circulating material longer than the new `Dmax = min(4·T_new, kMaxRepSeconds)` is
-   truncated (with a fade) over the next generations; until it decays away, the old long
-   repeats overlap the new short ones. That is audible and intended — a delay tail that
-   re-grids rather than snapping. At `r < 1` the same clamp applies one generation later.
-5. **Lengthening** leaves a gap: the last repetition finishes before the longer period is
+3. **Convergence after a shrink.** At effective rate `>= 1` the recycle preserves content
+   length, so circulating material longer than the new `Dmax = min(4·T_new,
+   kMaxRepSeconds)` is truncated (with a fade) over the next generations; until it decays
+   away, the old long repeats overlap the new short ones. At rate `< 1` the same clamp
+   applies one generation later.
+4. **Lengthening** leaves a gap: the last repetition finishes before the longer period is
    up, and the wet bus is silent until the next one starts.
-6. **Fades cannot be skipped across a change.** The `|r - 1| < 1e-4` bypass assumes the
-   next generation is contiguous with the current one, which stops being true the moment
-   `T` moves. Voices spawned in the two periods following a `T` change carry a
-   `forceFade` flag.
+5. **Fades cannot be skipped across a change.** The unity bypass assumes the next
+   generation is contiguous with the current one, which stops being true the moment `T`
+   moves. Voices spawned in the two periods following a `T` change carry a `forceFade`
+   flag.
+
+### REGRID
+
+`T_eff = T_target` immediately, bend factor `m = 1`.
+
+Voices in flight are not retimed: they keep their rate, pitch and length and play out
+under the cap they were spawned with. No doppler, no discontinuity. The old tail keeps
+ringing on the old grid and decays under feedback while new repetitions arrive on the new
+grid — the delay cross-fades between grids instead of dragging.
+
+### BEND
+
+`T_eff` slews toward `T_target` under a rate limit, and every live voice's read rate is
+multiplied by the resulting bend factor:
+
+```
+dT = clamp(T_target - T_eff, -kBendDown, +kBendUp) per sample   // kBendDown 3, kBendUp 0.75
+T_eff += dT
+m      = 1 - dT                                                 // m ∈ [0.25, 4]
+pOut  += r * m                                                  // all voices, all generations
+```
+
+This is the delay-line identity `y(t) = x(t - D(t))`, whose read pointer advances at
+`1 - D'(t)`: shortening the time speeds the tail up and pitches it, lengthening slows and
+drops it, and when the knob stops the factor returns to 1 and everything resumes at its
+own speed in the new position. The bend is baked into the recycle path as well — the
+write pointer keeps advancing at 1 while `pOut` moves at `r·m` — so the next generation
+inherits the bend, exactly as a tape delay records its own wobble.
+
+The rate limits are what make an instant knob jump musical rather than a click: they cap
+the bend at the plugin's own speed range (`m ∈ [0.25, 4]`), so a 20 s → 200 ms jump glides
+over ≈ 6.6 s. Constants tunable in phase 3; asymmetry (down faster than up) mirrors
+`m = 1 - dT`.
+
+Interactions:
+
+- The unity-fade bypass tests the **effective** rate `r · m`, so fades engage
+  automatically during a bend and switch off again when it settles.
+- A fast shorten drives `m > 1`, which can make a chasing voice overtake a source that is
+  still being written → the existing underrun guard fades and retires it. Losing the
+  oldest tail voices on a violent time jump is acceptable and audible as intended.
+- In sync mode BEND glides into a new division instead of locking to it instantly; that
+  is the point of the mode, and REGRID remains the default for grid-accurate work.
+- Tempo ramps in sync mode produce a continuous, correct tape-slide for free.
 
 ## Click protection
 
@@ -182,6 +225,7 @@ supports two voices sounding at once.
 | `time_ms` | Float | 10 – 20000 ms, skew ~0.3 | free mode |
 | `time_sync` | Bool | off / on | |
 | `time_div` | Choice | 1/32 … 1/4 … 1/1 … 2 bars (straight/dotted/triplet) | sync mode |
+| `time_mode` | Choice | Regrid / Bend | how the tail reacts to a time change |
 | `speed` | Float | 0.25 – 4.0, log2-symmetric skew (centre 1.0) | |
 | `feedback` | Float | 0 – 2 | >1 = runaway |
 | `fb_type` | Choice | Raw / Stable | |
@@ -194,8 +238,9 @@ Speed preset buttons (1/4, 1/2, 1, 2, 4) write `speed` via `setValueNotifyingHos
 they are just shortcuts — no extra parameter.
 
 Smoothing (`juce::SmoothedValue`, ~20 ms): speed (gives tape-style pitch glide),
-feedback, dry, wet. `time` and `fb_type` latch at period boundaries only. A voice keeps
-using the smoothed global rate, so a speed move bends all sounding repetitions together.
+feedback, dry, wet. `fb_type` latches at period boundaries; `time` is handled by the
+`time_mode` path above, not by a generic smoother. A voice keeps using the smoothed
+global rate, so a speed move bends all sounding repetitions together.
 
 ## Sync mode
 
@@ -241,7 +286,7 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 │  VARISPEED DELAY                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  ( TIME )   [FREE|SYNC] [div ▾]     ( SPEED )   ( FEEDBACK ) │
-│   1.20 s                             1.00x       0.65        │
+│   1.20 s    [REGRID|BEND]            1.00x       0.65        │
 │                          [¼][½][1][2][4]   [RAW|STABLE]      │
 ├─────────────────────────────────────────────────────────────┤
 │  EQ [ON]   ▮ ▮ ▮ ▮ ▮ ▮ ▮      (7 vertical sliders, ±12 dB)   │
@@ -251,8 +296,9 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Time knob shows ms/s in free mode and the division name in sync mode. Speed preset
-buttons highlight when `speed` is within 1 cent of the preset. The optional repetition
+Time knob shows ms/s in free mode and the division name in sync mode; in BEND mode the
+readout follows `T_eff` while it slews, so the glide is visible. Speed preset buttons
+highlight when `speed` is within 1 cent of the preset. The optional repetition
 view is the one place the overlap becomes legible — stacked bars, one per live voice,
 length `D[k]`, spaced `T` apart, on a 30 Hz timer.
 
@@ -273,10 +319,12 @@ length `D[k]`, spaced `T` apart, on a 30 Hz timer.
    it is a clean digital delay; at 2× repeats pitch up cumulatively (raw) or stay put
    (stable); at 0.5× repeats overlap instead of cutting off.
 3. **Caps + click protection + smoothing** — `Dmax` clamp, underrun guard, buffer-slot
-   stealing, live `T` changes, fades, unity-rate bypass + `forceFade`, smoothed
-   speed/feedback, `tanh` soft clip. *Done when:* no clicks at any speed, no zipper on
-   knob sweeps, fast 0.25→4 sweeps never read unwritten samples, a full sweep of the time
-   knob while sounding stays clean, `fb = 2` saturates instead of exploding.
+   stealing, live `T` changes in both time modes (REGRID snap, BEND slew + factor `m`),
+   fades, unity-rate bypass + `forceFade`, smoothed speed/feedback, `tanh` soft clip.
+   *Done when:* no clicks at any speed, no zipper on knob sweeps, fast 0.25→4 sweeps never
+   read unwritten samples, a full sweep of the time knob while sounding stays clean in
+   both modes and audibly bends in BEND, `fb = 2` saturates instead of exploding.
+   Tune `kBendUp` / `kBendDown` by ear here.
 4. **Sync** — playhead, divisions up to 2 bars, standalone fallback BPM. *Done when:*
    repeats stay locked through division changes and tempo ramps.
 5. **EQ** — 7-band biquads, per-voice state, bypass, accumulation across repeats.
@@ -299,10 +347,16 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
   written length; speed jump 0.25 → 4 mid-repetition retires voices instead of reading
   stale samples
 - voice count never exceeds `kMaxVoices`; buffer indices always in range
-- time change while sounding: `T` 20 s → 200 ms mid-repetition produces a boundary within
-  200 ms, no voice reads a recycled slot, output stays finite and click-free; `T`
+- REGRID time change while sounding: `T` 20 s → 200 ms mid-repetition produces a boundary
+  within 200 ms, no voice reads a recycled slot, output stays finite and click-free; `T`
   200 ms → 20 s leaves a clean gap, not a stuck buffer
-- sync: a division change and a continuous tempo ramp both re-grid without clicks
+- BEND: `T_eff` never moves faster than the rate limits, `m` stays inside [0.25, 4], and
+  `m` returns to exactly 1 once `T_eff == T_target`; a 20 s → 200 ms jump takes the
+  predicted ≈ 6.6 s and stays click-free throughout
+- BEND with `speed = 4` (effective rate up to 16) never reads past a source's written
+  length — the underrun guard fires instead
+- sync: a division change and a continuous tempo ramp both re-grid (REGRID) and glide
+  (BEND) without clicks
 - `fb = 2` stays finite over 60 s of noise; no NaN/denormals after speed sweeps
 - EQ: flat with all bands at 0 dB; +12 dB band raises that bin by ~12 dB per repetition
 
@@ -311,15 +365,11 @@ Add a `VarispeedDelayTests` console target linking a small `DelayEngine`-only un
 1. **Spacing at `r != 1`** — spacing is fixed at `T` (grid). The alternative (next
    repetition starts when the previous one ends, `T/r^N`) is real tape-runaway behavior
    and needs no overlap machinery at all. Worth a later `SPACING [GRID|TAPE]` switch.
-2. **Time-knob character** — the spec re-grids without retiming what is already sounding.
-   The tape alternative is to scale every in-flight voice's rate by `T_old / T_new`, so
-   the whole tail doppler-bends into the new time like a real delay line. Cheap to add
-   (voices already carry a rate) and could be a `TIME MODE [REGRID|BEND]` switch.
-3. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
+2. **Overlap gain** — 4 overlapping repeats at `fb = 1` sum to ~+12 dB. Soft clip catches
    it, but consider scaling the wet tap by `1/sqrt(activeVoices)` or documenting the wet
    knob as the trim.
-4. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
+3. **Anti-aliasing at high `r`** — reading at 4× aliases. Cheap fix: one-pole LP at
    `sr/(2r)` on the recycle path when `r > 1`. Decide after listening.
-5. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
-6. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
+4. **Interpolation** — start with linear; move to Catmull-Rom if 4× sounds gritty.
+5. **Stereo** — one shared read pointer per voice for both channels (no width effect). A
    per-channel speed offset would be a nice later addition.

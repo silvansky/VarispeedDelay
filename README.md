@@ -9,6 +9,7 @@ a different tape speed — pitch and duration change together.
 - 7-band graphic EQ in the feedback path, ±12 dB, bypassable
 - separate dry and wet knobs
 - slow repetitions overlap the following ones, never cut off at the period boundary
+- time mode switch: regrid the tail on a time change, or bend it like tape
 - short crossfades at repetition edges for click protection
 
 See `plan.md` for the design and `CLAUDE.md` for build instructions.
