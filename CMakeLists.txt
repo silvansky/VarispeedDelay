@@ -13,6 +13,8 @@ juce_add_plugin(VarispeedDelay
     NEEDS_MIDI_INPUT FALSE
     IS_SYNTH FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "VarispeedDelay needs audio input to process live signal."
 )
 
 set(VSPD_ENGINE_SOURCES
