@@ -8,20 +8,33 @@ short at the period boundary.
 
 ## Status
 
-Project is initialized: CMake + JUCE 8.0.12 submodule, VST3/AU/Standalone targets, empty
-passthrough processor + placeholder editor. All three formats build clean. No DSP yet.
+Phases 1–7 implemented; all three formats build warning-free and both test targets pass.
 
 ```
-CMakeLists.txt              juce_add_plugin, code VSil/Vspd, C++20
+CMakeLists.txt              juce_add_plugin, code VSil/Vspd, C++20, 2 test targets
 cmake/BuildDate.{cmake,h.in}
 install-au.sh               ad-hoc sign + install to /Library + auval
 libs/JUCE                   submodule @ 501c0767 (8.0.12-4)
-src/PluginProcessor.{h,cpp} passthrough, empty APVTS
-src/PluginEditor.{h,cpp}    title + build date
+src/DelayEngine.{h,cpp}     generation ring, voice pool, periods, fades, bend, sync, clip
+src/Voice.h                 per-voice state
+src/GraphicEQ.{h,cpp}       7 x stereo RBJ peaking biquad, POD coefficients
+src/Presets.{h,cpp}         embedded + user presets, reset-then-overlay apply
+src/LookAndFeel.{h,cpp}     dark flat styling
+src/RepetitionView.{h,cpp}  live repetition bars
+src/PluginProcessor.{h,cpp} APVTS layout, raw pointers, playhead, programs
+src/PluginEditor.{h,cpp}    layout, switches, footer with hover help, preset row
+tests/EngineTests.cpp       18 engine tests, no AudioProcessor dependency
+tests/PresetTests.cpp       preset staleness, preset bleed, state round trip
+presets/                    empty — factory preset content is still to be authored
 ```
 
 Build: `cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . -j8`
+Test:  `cd build && ctest --output-on-failure`
 Run: `open build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app`
+
+Outstanding: factory preset content (phase 7), and phase 8 host validation — `auval`,
+pluginval, Logic/Reaper smoke tests. Tuning by ear (`kSpeedGlideMs`, bend limits, clip
+threshold, interpolation order) has not been done.
 
 ## Core model
 
