@@ -101,10 +101,11 @@ private:
     struct Gen
     {
         juce::AudioBuffer<float> buf;
-        int inputLen = 0;
-        int written  = 0;
-        int writer   = -1;
-        void resetState() noexcept { inputLen = 0; written = 0; writer = -1; }
+        int inputLen   = 0;
+        int written    = 0;
+        int writer     = -1;
+        int inputTaper = 0;   // crossfade into the recycled-only tail, 0 when there is none
+        void resetState() noexcept { inputLen = 0; written = 0; writer = -1; inputTaper = 0; }
     };
 
     void   updateTiming (int numSamples);

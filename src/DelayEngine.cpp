@@ -283,7 +283,7 @@ void DelayEngine::openGeneration (double rEff)
     gens[slot].resetState();
 
     bool spawned = false;
-    double spawnDur = 0.0;
+    double spawnDur = 0.0, spawnWriteEnd = 0.0, spawnXfade = 0.0;
 
     if (srcLen > 0.5)
     {
@@ -313,12 +313,22 @@ void DelayEngine::openGeneration (double rEff)
         gens[slot].writer = vi;
         spawned = true;
         spawnDur = v.predDur;
+        spawnWriteEnd = v.predWriteEnd;
+        spawnXfade = v.xfade;
     }
 
     if (settings.spacing == Spacing::Tape && spawned && ! tapeAnchor)
         periodLen = (int) juce::jlimit ((double) minPeriod, (double) maxLen, std::round (spawnDur));
     else
         periodLen = (int) juce::jlimit ((double) minPeriod, (double) maxLen, std::round (tEff));
+
+    // A generation records input for one period, but its writing voice keeps recycling
+   // past that whenever the repetition outlasts the period (any rate below 1). That leaves
+   // a butt join at index periodLen which no voice envelope covers, so crossfade the
+   // recorded input out into the recycled-only tail. At rate 1 and above there is no join
+   // and no taper, which keeps unity sample-exact.
+    if (spawned && spawnWriteEnd > (double) periodLen + 1.0)
+        gens[slot].inputTaper = (int) std::max (1.0, std::min ((double) periodLen * 0.5, spawnXfade));
 
     tapeAnchor = false;
 }
@@ -367,24 +377,22 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         const double rEff = juce::jlimit (0.01, 64.0, r * m);
         if (std::abs (rEff - 1.0) >= kUnityEpsilon) nonUnitySeen = true;
 
+        // The period always ends at the *current* effective T, so a big shrink reacts
+        // within one new period instead of latching to the old boundary. Only TAPE, whose
+        // period is the previous repetition's duration, keeps its latched length.
+        auto effPeriod = [&]
+        {
+            return (settings.spacing == Spacing::Tape && ! tapeAnchor)
+                     ? periodLen
+                     : juce::jmax (minPeriod, (int) std::round (tEff));
+        };
+
         bool boundary = forceBoundary;
         forceBoundary = false;
-        double ppqNow = 0.0;
-        if (syncGrid)
-        {
-            ppqNow = ppqBlockStart + i * ppqPerSample;
-            if (ppqNow >= nextBoundaryPpq - 1.0e-12) boundary = true;
-        }
-        else
-        {
-            // The period always ends at the *current* effective T, so a big shrink reacts
-            // within one new period instead of latching to the old boundary. Only TAPE,
-            // whose period is the previous repetition's duration, keeps its latched length.
-            const int effPeriod = (settings.spacing == Spacing::Tape && ! tapeAnchor)
-                                    ? periodLen
-                                    : juce::jmax (minPeriod, (int) std::round (tEff));
-            if (n >= effPeriod) boundary = true;
-        }
+        const double ppqNow = syncGrid ? ppqBlockStart + i * ppqPerSample : 0.0;
+
+        if (syncGrid) { if (ppqNow >= nextBoundaryPpq - 1.0e-12) boundary = true; }
+        else          { if (n >= effPeriod()) boundary = true; }
 
         if (boundary)
         {
@@ -392,6 +400,10 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 nextBoundaryPpq = (std::floor (ppqNow / divPpq + 1.0e-9) + 1.0) * divPpq;
             openGeneration (rEff);
         }
+
+        const double samplesToBoundary = syncGrid
+            ? (ppqPerSample > 0.0 ? (nextBoundaryPpq - ppqNow) / ppqPerSample : (double) maxLen)
+            : (double) (effPeriod() - n);
 
         float x[2] { 0.0f, 0.0f };
         for (int ch = 0; ch < nch; ++ch) x[ch] = out[ch][i];
@@ -513,12 +525,16 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         if (n < maxLen)
         {
             Gen& cg = gens[curSlot];
+            float inGain = 1.0f;
+            if (cg.inputTaper > 0 && samplesToBoundary < (double) cg.inputTaper)
+                inGain = (float) raisedCos (std::max (0.0, samplesToBoundary) / cg.inputTaper);
+
             const bool add = cg.written > n;
             for (int ch = 0; ch < nch; ++ch)
             {
                 float* d = cg.buf.getWritePointer (ch);
-                if (add) d[n] += x[ch];
-                else     d[n]  = x[ch];
+                if (add) d[n] += x[ch] * inGain;
+                else     d[n]  = x[ch] * inGain;
             }
             if (! add) cg.written = n + 1;
             cg.inputLen = n + 1;

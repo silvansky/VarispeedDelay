@@ -553,6 +553,44 @@ void testPositionalEnvelope()
     check (r.allFinite(), "finite");
 }
 
+void testNoSpliceInsideGeneration()
+{
+    // A generation records input for one period, but its writing voice recycles past that
+    // at any rate below 1, leaving a butt join at index periodLen. DC exposes it: a tone
+    // at an exact multiple of 1/T would hide the step at a zero crossing.
+    for (auto type : { FbType::Raw, FbType::Stable })
+    {
+        for (double speed : { 0.25, 0.5, 0.8, 1.0, 2.0 })
+        {
+            Rig r;
+            r.s.speed = speed;
+            r.s.feedback = 0.0f;
+            r.s.fbType = type;
+            r.s.timeMs = 200.0;
+            r.apply();
+
+            const int T = (int) std::round (0.2 * kSr);
+            r.run (T * 8, [] (int) { return 0.4f; });
+
+            // skip the forceFade transient that the initial time latch opens
+            float maxStep = 0.0f;
+            int at = 0;
+            for (size_t i = (size_t) T * 4; i < r.left.size(); ++i)
+            {
+                const float d = std::abs (r.left[i] - r.left[i - 1]);
+                if (d > maxStep) { maxStep = d; at = (int) i; }
+            }
+
+            // DC in, so every legitimate change is a raised-cosine fade of 8 ms at most
+            check (maxStep < 0.01f, "no step at the input/recycle join");
+            if (maxStep >= 0.01f)
+                std::printf ("     %-6s speed %.2f step %.4f at n/T=%.3f\n",
+                             type == FbType::Raw ? "raw" : "stable", speed, maxStep,
+                             (double) at / T);
+        }
+    }
+}
+
 void testMinimumPeriodIsOneBuffer()
 {
     // asking for less than a buffer must give a period of exactly one buffer
@@ -647,6 +685,7 @@ int main()
     test ("EQ accumulates, rep 1 already filtered", testEqAccumulates);
     test ("integer rates are lossless", testIntegerRatesAreLossless);
     test ("positional envelope un-fades", testPositionalEnvelope);
+    test ("no splice at the input/recycle join", testNoSpliceInsideGeneration);
     test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
 

@@ -411,6 +411,25 @@ The envelope is applied to the wet tap always, and to the recycle tap **only in 
 mode**, where the recycled signal is the resampled one and its edges must not click on
 the next pass. The Stable recycle tap is a unity copy and needs no fade.
 
+### The join inside a generation
+
+The voice envelopes above cover the *edges* of a repetition, but there is a second seam
+they cannot reach. Generation `G[k]` records input over `[0, P)` and its writing voice
+keeps recycling past that whenever the repetition outlasts the period — which is every
+rate below 1. So the buffer holds `input + recycled` up to `P` and `recycled` only beyond
+it, and the step at index `P` is the instantaneous input level. Every voice reading at
+`r < 1` crosses it mid-flight, with `env` at 1 and no fade in sight: a click on every
+repetition, at every period, at every slow speed.
+
+The recycled signal is the continuous one across that join, so the fix is to fade the
+*recorded input* out over the last `xfade` samples of the period, turning the butt join
+into a crossfade. It is armed only when the writing voice will actually write past `P`
+(`predWriteEnd > P`), so at rate 1 and above — and in Stable, whose unity copy is exactly
+as long as its source — there is no taper at all and unity stays sample-exact.
+
+Diagnosing this needs DC or noise, not a tone: a sine at an exact multiple of `1/T` puts
+the join on a zero crossing and hides the step completely.
+
 Optional refinement if the joins are still audible: overlap the retiring voice with the
 new one by `xfade` ms (equal-power) instead of a plain fade — the voice pool already
 supports two voices sounding at once.

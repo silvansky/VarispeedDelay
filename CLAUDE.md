@@ -43,6 +43,10 @@ Engine invariants worth knowing before changing it:
   exception, where the latched voice duration is the period.
 - The shortest period is the host's buffer size, not `kMinDelayMs` — that constant is only
   the `time_ms` parameter floor. The UI shows the real period when the clamp binds.
+- A generation records input for one period but its writing voice recycles past that at
+  any rate below 1, so the buffer has a join at index `periodLen` that no voice envelope
+  covers. `Gen::inputTaper` crossfades the recorded input into the recycled-only tail
+  there. It is zero at rate 1 and above, which keeps unity sample-exact.
 - Fades are positional (computed from the voice's state each sample), never latched
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long
