@@ -1,5 +1,7 @@
 # Varispeed Delay
 
+[![build](https://github.com/silvansky/VarispeedDelay/actions/workflows/build.yml/badge.svg)](https://github.com/silvansky/VarispeedDelay/actions/workflows/build.yml)
+
 JUCE audio plugin (VST3 / AU / Standalone): a delay where every repetition is replayed at
 a different tape speed — pitch and duration change together.
 
@@ -30,6 +32,10 @@ ctest --output-on-failure          # engine + preset/parameter unit tests
 
 Artefacts land in `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`.
 `./install-au.sh` signs the AU, installs it and runs `auval`.
+
+CI builds and tests every push on macOS (universal, arm64 + x86_64) and Windows, and
+pushing a `v*` tag attaches the zipped VST3 / AU / Standalone builds to a release.
+Prebuilt binaries are on the [releases page](https://github.com/silvansky/VarispeedDelay/releases).
 
 ## Docs
 
