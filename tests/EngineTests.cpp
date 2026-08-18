@@ -556,11 +556,11 @@ void testPositionalEnvelope()
 void testMinimumPeriodIsOneBuffer()
 {
     // asking for less than a buffer must give a period of exactly one buffer
-    for (int block : { 64, 512, 2048 })
+    for (int block : { 16, 64, 512, 2048 })
     {
         DelayEngine e;
         DelayEngine::Settings s;
-        s.timeMs = kMinDelayMs;      // 10 ms, shorter than a 2048-sample buffer
+        s.timeMs = kMinTimeParamMs;  // the knob floor, below every buffer size here
         s.speed = 1.0;
         s.feedback = 0.0f;
         s.dry = 0.0f;
@@ -570,7 +570,7 @@ void testMinimumPeriodIsOneBuffer()
 
         check (e.getMinPeriodSamples() == block, "minimum period equals the buffer size");
 
-        const int expected = juce::jmax (block, (int) std::round (kMinDelayMs * 0.001 * kSr));
+        const int expected = juce::jmax (block, (int) std::round (kMinTimeParamMs * 0.001 * kSr));
         checkNear (e.getEffectiveTimeSamples(), expected, 1.0, "period floored at one buffer");
 
         // an impulse comes back no earlier than one buffer later

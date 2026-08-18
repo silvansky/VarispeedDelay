@@ -239,8 +239,10 @@ Both modes share these rules:
 
    Rule: compare against the **last latched** `T`, never the previous block's, so a slow
    ramp still accumulates into a detected change instead of hiding under the threshold
-   forever. Treat `|ΔT| < max(0.5 %, 1 ms)` as no change at all — no re-latch, no
-   `forceFade`. Anything larger is a real change and takes the path above.
+   forever. Treat `|ΔT| < max(0.5 %, 1 sample)` as no change at all — no re-latch, no
+   `forceFade`. Anything larger is a real change and takes the path above. (The floor is
+   one sample, not 1 ms, so that sub-millisecond periods stay reachable; anything finer
+   than a sample is float noise by definition.)
 
 ### REGRID
 
@@ -376,12 +378,15 @@ the period. The `D_est / 2` clamp guarantees the envelope still reaches unity; i
 rate change invalidates it, the envelope degrades to a rounded blip that never quite hits
 1, which is graceful rather than broken.
 
-The `time_ms` parameter still starts at 10 ms, but the engine floors the *period* at the
-host's buffer size (`prepare`'s `maxBlockSize`), because a period shorter than one block
-would open several generations inside a single `processBlock`. At 512/48 kHz that is
-10.7 ms, so nothing changes in practice; at 2048/44.1 kHz the floor is 46 ms and the UI
-shows the real period instead of the knob's value. With the fade scaled, a period this
-short under varispeed is a flutter/comb effect — odd, but a legitimate one.
+The minimum delay time is the host's buffer size, not a fixed millisecond value. The
+`time_ms` parameter runs from 0.1 ms (low enough for any realistic buffer at any sample
+rate) and the engine clamps the *period* to `prepare`'s `maxBlockSize`, because a period
+shorter than one block would open several generations inside a single `processBlock`. The
+parameter range stays fixed so automation and presets remain portable; the UI shows the
+real period whenever the clamp binds. The deadband's absolute floor is one sample rather
+than 1 ms for the same reason — a millisecond floor would make sub-millisecond periods
+unreachable. With the fade scaled, a period this short under varispeed is a flutter/comb
+effect — odd, but a legitimate one.
 
 Raised-cosine envelope per voice, evaluated per sample as a pure function of the voice's
 current state — never a latched countdown, which would be wrong as soon as the rate moved:
@@ -414,7 +419,7 @@ supports two voices sounding at once.
 
 | ID | Type | Range / choices | Notes |
 |---|---|---|---|
-| `time_ms` | Float | 10 – 20000 ms, skew ~0.3 | free mode |
+| `time_ms` | Float | 0.1 – 20000 ms, skew ~0.3 | free mode; engine floors at one buffer |
 | `time_sync` | Bool | off / on | |
 | `time_div` | Choice | 1/32 … 1/4 … 1/1 … 2 bars (straight/dotted/triplet) | sync mode |
 | `time_mode` | Choice | Regrid / Bend | how the tail reacts to a time change |

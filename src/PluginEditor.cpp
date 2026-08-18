@@ -30,8 +30,8 @@ float speedForPreset (int i) { return std::pow (2.0f, kSpeedPresetSemis[i] / 12.
 
 juce::String msText (double ms)
 {
-    return ms < 1000.0 ? juce::String (ms, ms < 100.0 ? 1 : 0) + " ms"
-                       : juce::String (ms / 1000.0, 2) + " s";
+    if (ms >= 1000.0) return juce::String (ms / 1000.0, 2) + " s";
+    return juce::String (ms, ms < 10.0 ? 2 : (ms < 100.0 ? 1 : 0)) + " ms";
 }
 
 void drawPanel (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& title)

@@ -7,7 +7,7 @@ namespace
 {
 juce::String msString (float ms)
 {
-    if (ms < 1000.0f) return juce::String (ms, ms < 100.0f ? 1 : 0) + " ms";
+    if (ms < 1000.0f) return juce::String (ms, ms < 10.0f ? 2 : (ms < 100.0f ? 1 : 0)) + " ms";
     return juce::String (ms / 1000.0f, 2) + " s";
 }
 
@@ -41,7 +41,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout VarispeedDelayProcessor::cre
 
     layout.add (std::make_unique<Float> (
         juce::ParameterID { pid::timeMs, 1 }, "Time",
-        juce::NormalisableRange<float> ((float) kMinDelayMs, (float) kMaxDelayMs, 0.0f, 0.3f), 500.0f,
+        juce::NormalisableRange<float> ((float) kMinTimeParamMs, (float) kMaxDelayMs, 0.0f, 0.3f), 500.0f,
         Attr().withStringFromValueFunction ([] (float v, int) { return msString (v); })));
 
     layout.add (std::make_unique<Bool> (juce::ParameterID { pid::timeSync, 1 }, "Sync", false));

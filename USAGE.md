@@ -8,7 +8,7 @@ instead of being cut short.
 
 | Control | What it does |
 |---|---|
-| **TIME** | The period between repetitions, 10 ms – 20 s. In SYNC it follows the division instead. |
+| **TIME** | The period between repetitions, 0.1 ms – 20 s, floored at the audio buffer size. In SYNC it follows the division instead. |
 | **FREE / SYNC** | SYNC locks the period to the host's ppq grid, so repetitions land where notes begin. |
 | **division** | 1/32 up to 2 bars, straight, dotted and triplet. |
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
@@ -59,11 +59,13 @@ Hover any control for a one-line description in the footer.
   `n` inside a period returns after `T + n(1/r − 1)`, not exactly `T`. At `r > 1` the
   material is compressed toward the boundary, at `r < 1` stretched away from it. This is
   inherent to chunked varispeed; the *spacing* of repetitions is still exactly `T`.
-- **The delay time cannot go below one audio buffer.** The knob starts at 10 ms, but the
-  engine floors the period at the host's buffer size, so a 2048-sample buffer at 44.1 kHz
-  means a 46 ms minimum. Below that a single `processBlock` would open several generations
-  at once. When the floor binds, the TIME readout shows the real period rather than the
-  knob's value.
+- **The delay time cannot go below one audio buffer.** The knob reaches 0.1 ms, but the
+  engine floors the period at the host's buffer size, because below that a single
+  `processBlock` would open several generations at once. So the real minimum follows your
+  buffer setting: 16 samples at 48 kHz gives 0.33 ms, 2048 at 44.1 kHz gives 46 ms. When
+  the floor binds, the TIME readout shows the real period rather than the knob's value.
+  Periods this short are a flutter/comb effect rather than a delay — which is a legitimate
+  use, just not a rhythmic one.
 - **Overlap gain.** Four overlapping repeats at feedback 1 sum to roughly +12 dB. There is
   no automatic compensation, because a `1/sqrt(voices)` scaling would pump as voices come
   and go. The soft clip bounds the loop and the WET knob is the trim.

@@ -12,7 +12,7 @@ namespace vspd
 inline constexpr int    kNumGenBuffers   = 6;
 inline constexpr int    kMaxVoices       = 5;
 inline constexpr double kMaxRepSeconds   = 20.0;
-inline constexpr double kMinDelayMs      = 10.0;
+inline constexpr double kMinTimeParamMs  = 0.1;   // knob floor; the engine clamps to one buffer
 inline constexpr double kMaxDelayMs      = 20000.0;
 inline constexpr double kMinSpeed        = 0.25;
 inline constexpr double kMaxSpeed        = 4.0;

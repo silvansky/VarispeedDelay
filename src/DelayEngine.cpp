@@ -134,7 +134,9 @@ void DelayEngine::updateTiming (int numSamples)
     double newT = wantSync ? (60.0 / bpm * quarters * sr) : (settings.timeMs * 0.001 * sr);
     newT = juce::jlimit ((double) minPeriod, (double) maxLen, newT);
 
-    const double deadband = std::max (0.005 * tLatched, 0.001 * sr);
+    // relative, with a one-sample floor — anything finer than a sample is float noise,
+    // and a fixed millisecond floor would make sub-millisecond periods unreachable
+    const double deadband = std::max (0.005 * tLatched, 1.0);
     if (std::abs (newT - tLatched) >= deadband)
     {
         tLatched = newT;
