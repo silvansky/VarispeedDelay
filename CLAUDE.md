@@ -47,6 +47,11 @@ Engine invariants worth knowing before changing it:
   any rate below 1, so the buffer has a join at index `periodLen` that no voice envelope
   covers. `Gen::inputTaper` crossfades the recorded input into the recycled-only tail
   there. It is zero at rate 1 and above, which keeps unity sample-exact.
+- The unity bypass needs more than `rEff == 1`. It assumes the repetition tiles the grid,
+  which is false once a source buffer is longer than a period (left over from a slower
+  setting) — `Voice::contiguous` gates it. And the policy either side of a join must
+  agree: a voice inherits `fadeIn` from its predecessor's `fadeOut`, otherwise a fading
+  voice hands over to a bypassing one and the seam is a cliff.
 - Fades are positional (computed from the voice's state each sample), never latched
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long

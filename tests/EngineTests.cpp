@@ -1,11 +1,30 @@
 #include "DelayEngine.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <new>
 #include <vector>
 
 using namespace vspd;
+
+// Replacing global new/delete lets the tests prove the audio path never allocates.
+std::atomic<int>  gAllocs { 0 };
+std::atomic<bool> gTrackAllocs { false };
+
+void* operator new (std::size_t n)
+{
+    if (gTrackAllocs.load (std::memory_order_relaxed)) gAllocs.fetch_add (1, std::memory_order_relaxed);
+    if (void* p = std::malloc (n != 0 ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[] (std::size_t n) { return operator new (n); }
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 
 namespace
 {
@@ -55,7 +74,10 @@ struct Rig
 
     void apply() { engine.setSettings (s); }
 
-    /** Runs `numSamples` through the engine, calling `input` for each sample index. */
+    int inputIndex = 0;
+
+    /** Runs `numSamples` through the engine. The index handed to `input` continues across
+        calls, so staged tests do not splice their own signal at every stage boundary. */
     void run (int numSamples, const std::function<float (int)>& input)
     {
         juce::AudioBuffer<float> buf (2, kBlock);
@@ -66,7 +88,7 @@ struct Rig
             buf.setSize (2, nb, false, false, true);
             for (int i = 0; i < nb; ++i)
             {
-                const float x = input (done + i);
+                const float x = input (inputIndex++);
                 buf.setSample (0, i, x);
                 buf.setSample (1, i, x);
             }
@@ -230,8 +252,8 @@ void testSpeedSweep()
         const double p = (double) done / sweepLen;
         r.s.speed = std::pow (2.0, -2.0 + 4.0 * p);
         r.apply();
-        r.run (juce::jmin (kBlock, sweepLen - done), [base, done] (int i)
-               { return 0.3f * std::sin ((base + done + i) * 0.02f); });
+        r.run (juce::jmin (kBlock, sweepLen - done),
+               [] (int i) { return 0.3f * std::sin (i * 0.02f); });
     }
 
     check (r.allFinite(), "no NaN after a 0.25 -> 4 sweep");
@@ -591,6 +613,104 @@ void testNoSpliceInsideGeneration()
     }
 }
 
+void testUnityAfterSpeedChange()
+{
+    // Returning to exactly 1x leaves generations that are longer than a period behind, so
+    // repetitions overlap and no longer tile the grid. The unity bypass must not assume
+    // they do, and the fade policy either side of a join must agree.
+    for (double from : { 0.25, 0.5, 0.8, 2.0, 4.0, 1.0 })
+    {
+        Rig r;
+        r.s.speed = from;
+        r.s.feedback = 0.0f;
+        r.s.eqOn = false;
+        r.s.timeMs = 200.0;
+        r.apply();
+
+        const int T = (int) std::round (0.2 * kSr);
+        auto tone = [] (int i) { return 0.4f * (float) std::sin (i * 0.004); };
+        r.run (T * 6, tone);
+
+        r.s.speed = 1.0;
+        r.apply();
+        const int mark = r.written;
+        r.run (T * 10, tone);
+
+        // the input's own slope bounds any legitimate step; a splice is ~0.4
+        float maxStep = 0.0f;
+        int at = 0;
+        for (size_t i = (size_t) mark + (size_t) T; i < r.left.size(); ++i)
+        {
+            const float d = std::abs (r.left[i] - r.left[i - 1]);
+            if (d > maxStep) { maxStep = d; at = (int) i; }
+        }
+
+        check (maxStep < 0.02f, "no step after returning to unity");
+        if (maxStep >= 0.02f)
+            std::printf ("     %.2f -> 1.0 step %.4f at %.2f T after the switch\n",
+                         from, maxStep, (double) (at - mark) / T);
+        check (r.engine.maxConcurrentVoices() <= kMaxVoices, "voice pool respected");
+    }
+}
+
+void testNoAllocationInProcess()
+{
+    DelayEngine e;
+    DelayEngine::Settings s;
+    s.timeMs = 150.0;
+    s.feedback = 0.8f;
+    s.wet = 1.0f;
+    e.setSettings (s);
+    e.prepare (kSr, kBlock, 2);
+
+    juce::AudioBuffer<float> buf (2, kBlock);
+    DelayEngine::Transport t;
+    t.valid = true;
+    t.playing = true;
+    t.bpm = 128.0;
+
+    for (int i = 0; i < kBlock; ++i) { buf.setSample (0, i, 0.2f); buf.setSample (1, i, 0.2f); }
+    e.process (buf);          // warm up outside the tracked window
+
+    gAllocs.store (0);
+    gTrackAllocs.store (true);
+
+    for (int b = 0; b < 400; ++b)
+    {
+        // exercise every branch: boundaries, glides, sync, EQ, mode and spacing switches
+        s.speed    = 0.25 + 3.5 * (b % 100) / 100.0;
+        s.timeMs   = 40.0 + (b % 7) * 30.0;
+        s.eqOn     = (b % 3) == 0;
+        s.sync     = (b % 2) == 0;
+        s.divIndex = b % numDivisions();
+        s.spacing  = (b % 11) == 0 ? Spacing::Tape : Spacing::Grid;
+        s.timeMode = (b % 13) == 0 ? TimeMode::Bend : TimeMode::Regrid;
+        s.fbType   = (b % 17) == 0 ? FbType::Stable : FbType::Raw;
+        for (auto& g : s.eqDb) g = (float) ((b % 5) - 2) * 3.0f;
+        e.setSettings (s);
+
+        t.ppq = b * kBlock * t.bpm / 60.0 / kSr;
+        e.setTransport (t);
+
+        for (int i = 0; i < kBlock; ++i)
+        {
+            const float x = 0.3f * std::sin ((b * kBlock + i) * 0.01f);
+            buf.setSample (0, i, x);
+            buf.setSample (1, i, x);
+        }
+        e.process (buf);
+
+        DelayEngine::VoiceInfo info[kMaxVoices];
+        e.getVoiceSnapshot (info, kMaxVoices);
+        (void) e.getTailSeconds();
+    }
+
+    gTrackAllocs.store (false);
+    const int n = gAllocs.load();
+    check (n == 0, "the audio path allocates nothing");
+    if (n != 0) std::printf ("     %d allocations during process()\n", n);
+}
+
 void testMinimumPeriodIsOneBuffer()
 {
     // asking for less than a buffer must give a period of exactly one buffer
@@ -686,6 +806,8 @@ int main()
     test ("integer rates are lossless", testIntegerRatesAreLossless);
     test ("positional envelope un-fades", testPositionalEnvelope);
     test ("no splice at the input/recycle join", testNoSpliceInsideGeneration);
+    test ("unity is clean after a speed change", testUnityAfterSpeedChange);
+    test ("no allocation on the audio thread", testNoAllocationInProcess);
     test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
 

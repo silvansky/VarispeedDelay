@@ -403,9 +403,17 @@ env        = raisedCos(min(inSamples, toContent, toCap) / xfade)   // clamped to
   content end, the `Dmax` clamp, or a slot steal (which forces `env` down over `xfade`)
 - because it is positional, a fade-out that started can un-fade if the rate drops and the
   end recedes; that is correct, not a glitch
-- **skip entirely when `|rEff - 1| < 1e-4` and no `forceFade` flag is set** — at unity the
-  next generation is contiguous with the current one and any fade would add periodic
-  amplitude ripple
+- **skip entirely at unity, but only when the join really is one.** `|rEff - 1| < 1e-4`
+  is necessary and not sufficient. The bypass assumes the next generation is contiguous
+  with the current one, which needs two more things:
+  - the source is exactly one period long (`Voice::contiguous`). After a spell at a slower
+    speed the generations are up to `4T` long and stay that way, so repetitions overlap
+    and each one's start is a splice even though the rate is exactly 1.
+  - the neighbour agrees. Fade-in and fade-out are decided per side: a voice fades out if
+    it is forced or non-contiguous, and fades **in** if that is true *or its predecessor
+    faded out*. Without the inheritance a fading voice hands over to a bypassing one and
+    the seam is a full-amplitude step instead of a dip; with it, the bypass re-engages one
+    generation after everything is clean again.
 
 The envelope is applied to the wet tap always, and to the recycle tap **only in Raw
 mode**, where the recycled signal is the resampled one and its edges must not click on

@@ -143,6 +143,7 @@ private:
 
     int    forceFadeCounter = 0;
     bool   nonUnitySeen = false;
+    bool   lastSpawnFadedOut = false;
     bool   timeChangedSeen = false;
     bool   tapeAnchor = true;
     bool   forceBoundary = false;

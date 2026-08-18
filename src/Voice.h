@@ -14,8 +14,10 @@ struct Voice
     bool   active      = false;
     bool   writing     = false;
     bool   retiring    = false;
-    bool   forceFade   = false;
+    bool   fadeIn      = false;   // start of this repetition is a splice
+    bool   fadeOut     = false;   // end of it is too
     bool   sourceLost  = false;   // src slot was recycled under us — hold last sample
+    bool   contiguous  = false;   // source is exactly one period, so the unity bypass is safe
     bool   silent      = false;   // audible tap done, unity recycle copy still running
     FbType fbType      = FbType::Raw;
 

@@ -1,10 +1,43 @@
 #include "PluginProcessor.h"
 
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <new>
+
+// Replacing global new/delete lets the test prove processBlock never allocates.
+std::atomic<int>  gAllocs { 0 };
+std::atomic<bool> gTrackAllocs { false };
+
+void* operator new (std::size_t n)
+{
+    if (gTrackAllocs.load (std::memory_order_relaxed)) gAllocs.fetch_add (1, std::memory_order_relaxed);
+    if (void* p = std::malloc (n != 0 ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[] (std::size_t n) { return operator new (n); }
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 
 namespace
 {
+struct FakePlayHead : juce::AudioPlayHead
+{
+    double ppq = 0.0;
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo info;
+        info.setIsPlaying (true);
+        info.setBpm (128.0);
+        info.setPpqPosition (ppq);
+        info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+        return info;
+    }
+};
+
 int failures = 0;
 int checks = 0;
 const char* currentTest = "";
@@ -185,6 +218,46 @@ void testProcessorBasics()
     }
     check (finite, "processBlock output is finite");
 }
+void testProcessBlockDoesNotAllocate()
+{
+    VarispeedDelayProcessor p;
+    FakePlayHead playHead;
+    p.setPlayHead (&playHead);
+    p.prepareToPlay (48000.0, 512);
+
+    juce::AudioBuffer<float> buf (2, 512);
+    juce::MidiBuffer midi;
+    buf.clear();
+    p.processBlock (buf, midi);         // warm up outside the tracked window
+
+    auto* speed = p.getAPVTS().getParameter (pid::speed);
+    auto* time  = p.getAPVTS().getParameter (pid::timeMs);
+    auto* sync  = p.getAPVTS().getParameter (pid::timeSync);
+    auto* eq    = p.getAPVTS().getParameter (pid::eqOn);
+
+    gAllocs.store (0);
+    gTrackAllocs.store (true);
+
+    for (int b = 0; b < 300; ++b)
+    {
+        speed->setValue ((float) (b % 100) / 100.0f);
+        time->setValue ((float) (b % 37) / 37.0f);
+        sync->setValue ((b % 2) == 0 ? 1.0f : 0.0f);
+        eq->setValue ((b % 3) == 0 ? 1.0f : 0.0f);
+        playHead.ppq = b * 512 * 128.0 / 60.0 / 48000.0;
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 512; ++i)
+                buf.setSample (ch, i, 0.3f * std::sin ((b * 512 + i) * 0.01f));
+
+        p.processBlock (buf, midi);
+        (void) p.getTailLengthSeconds();
+    }
+
+    gTrackAllocs.store (false);
+    const int n = gAllocs.load();
+    check (n == 0, "processBlock allocates nothing (" + juce::String (n) + " allocations)");
+}
 } // namespace
 
 int main()
@@ -198,6 +271,7 @@ int main()
     test ("reset-then-overlay leaves nothing of the previous preset", testNoPresetBleed);
     test ("host state save/restore", testStateRoundTrip);
     test ("processor basics", testProcessorBasics);
+    test ("processBlock does not allocate", testProcessBlockDoesNotAllocate);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

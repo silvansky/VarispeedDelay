@@ -91,6 +91,7 @@ void DelayEngine::reset()
 
     forceFadeCounter = 0;
     nonUnitySeen = false;
+    lastSpawnFadedOut = false;
     timeChangedSeen = false;
     tapeAnchor = true;
     forceBoundary = false;
@@ -283,6 +284,7 @@ void DelayEngine::openGeneration (double rEff)
     gens[slot].resetState();
 
     bool spawned = false;
+    int spawnedIndex = -1;
     double spawnDur = 0.0, spawnWriteEnd = 0.0, spawnXfade = 0.0;
 
     if (srcLen > 0.5)
@@ -308,9 +310,9 @@ void DelayEngine::openGeneration (double rEff)
                                         kXfadeMaxMs * 0.001 * sr,
                                         kXfadePct * std::min (tEff, dEst));
         v.xfade = std::max (1.0, std::min (xf, dEst * 0.5));
-        v.forceFade = forceFadeCounter > 0;
 
         gens[slot].writer = vi;
+        spawnedIndex = vi;
         spawned = true;
         spawnDur = v.predDur;
         spawnWriteEnd = v.predWriteEnd;
@@ -329,6 +331,24 @@ void DelayEngine::openGeneration (double rEff)
    // and no taper, which keeps unity sample-exact.
     if (spawned && spawnWriteEnd > (double) periodLen + 1.0)
         gens[slot].inputTaper = (int) std::max (1.0, std::min ((double) periodLen * 0.5, spawnXfade));
+
+    // The unity bypass assumes this repetition tiles the grid: that it starts where the
+    // previous one ended. That only holds when the source is exactly one period long.
+    // A source left over from a slower setting is longer, so the voice is mid-buffer when
+    // its successor starts a fresh one and the join is a real splice — fade it.
+    if (spawnedIndex >= 0)
+    {
+        Voice& v = voices[spawnedIndex];
+        v.contiguous = srcLen <= (double) periodLen + 1.0;
+
+        // Fade policy has to agree across a join: if the outgoing repetition fades out and
+        // the incoming one does not fade in, the seam is a cliff rather than a dip. So a
+        // voice inherits a fade-in from its predecessor's fade-out, and the bypass
+        // re-engages one generation after everything is clean again.
+        v.fadeOut = forceFadeCounter > 0 || ! v.contiguous;
+        v.fadeIn = v.fadeOut || lastSpawnFadedOut;
+        lastSpawnFadedOut = v.fadeOut;
+    }
 
     tapeAnchor = false;
 }
@@ -449,13 +469,16 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                     if (v.fbType == FbType::Stable && v.writing) v.silent = true;
                     else { deactivateVoice (vi); continue; }
                 }
-                else if (! v.forceFade && std::abs (rEff - 1.0) < kUnityEpsilon)
-                {
-                    envd = 1.0;
-                }
                 else
                 {
-                    envd = raisedCos (std::min ({ v.elapsed, toContent, toCap }) / v.xfade);
+                    // At unity a repetition can butt-join its neighbours sample-exactly, so
+                    // only the sides that are genuine splices get an envelope. The Dmax cap
+                    // is always a truncation and always fades.
+                    const bool unity = std::abs (rEff - 1.0) < kUnityEpsilon;
+                    double a = toCap;
+                    if (v.fadeOut || ! unity) a = std::min (a, toContent);
+                    if (v.fadeIn  || ! unity) a = std::min (a, v.elapsed);
+                    envd = raisedCos (a / v.xfade);
                 }
             }
 
