@@ -23,7 +23,7 @@ src/LookAndFeel.{h,cpp}     dark flat styling
 src/RepetitionView.{h,cpp}  live repetition bars
 src/PluginProcessor.{h,cpp} APVTS layout, raw pointers, playhead, programs
 src/PluginEditor.{h,cpp}    layout, switches, footer with hover help, preset row
-tests/EngineTests.cpp       18 engine tests, no AudioProcessor dependency
+tests/EngineTests.cpp       19 engine tests, no AudioProcessor dependency
 tests/PresetTests.cpp       preset staleness, preset bleed, state round trip
 presets/                    empty — factory preset content is still to be authored
 ```
@@ -329,7 +329,7 @@ buffers — is untouched.
 ```
 GRID:  P[k] = T                     // or the next PPQ crossing in sync mode
 TAPE:  P[k] = D[k] = L[k-1] / r     // the previous repetition's duration
-                                    // clamped to [10 ms, 20 s]
+                                    // clamped to [one buffer, 20 s]
 ```
 
 **GRID** keeps repetitions on the delay grid: they arrive every `T` no matter what the
@@ -376,8 +376,12 @@ the period. The `D_est / 2` clamp guarantees the envelope still reaches unity; i
 rate change invalidates it, the envelope degrades to a rounded blip that never quite hits
 1, which is graceful rather than broken.
 
-The minimum delay time stays at 10 ms. With the fade scaled it is mechanically fine, and
-a 10 ms period under varispeed is a flutter/comb effect — odd, but a legitimate one.
+The `time_ms` parameter still starts at 10 ms, but the engine floors the *period* at the
+host's buffer size (`prepare`'s `maxBlockSize`), because a period shorter than one block
+would open several generations inside a single `processBlock`. At 512/48 kHz that is
+10.7 ms, so nothing changes in practice; at 2048/44.1 kHz the floor is 46 ms and the UI
+shows the real period instead of the knob's value. With the fade scaled, a period this
+short under varispeed is a flutter/comb effect — odd, but a legitimate one.
 
 Raised-cosine envelope per voice, evaluated per sample as a pure function of the voice's
 current state — never a latched countdown, which would be wrong as soon as the rate moved:

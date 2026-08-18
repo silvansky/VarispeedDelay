@@ -553,6 +553,45 @@ void testPositionalEnvelope()
     check (r.allFinite(), "finite");
 }
 
+void testMinimumPeriodIsOneBuffer()
+{
+    // asking for less than a buffer must give a period of exactly one buffer
+    for (int block : { 64, 512, 2048 })
+    {
+        DelayEngine e;
+        DelayEngine::Settings s;
+        s.timeMs = kMinDelayMs;      // 10 ms, shorter than a 2048-sample buffer
+        s.speed = 1.0;
+        s.feedback = 0.0f;
+        s.dry = 0.0f;
+        s.wet = 1.0f;
+        e.setSettings (s);
+        e.prepare (kSr, block, 2);
+
+        check (e.getMinPeriodSamples() == block, "minimum period equals the buffer size");
+
+        const int expected = juce::jmax (block, (int) std::round (kMinDelayMs * 0.001 * kSr));
+        checkNear (e.getEffectiveTimeSamples(), expected, 1.0, "period floored at one buffer");
+
+        // an impulse comes back no earlier than one buffer later
+        std::vector<float> out;
+        juce::AudioBuffer<float> buf (2, block);
+        for (int b = 0; b < 40; ++b)
+        {
+            buf.clear();
+            if (b == 0) { buf.setSample (0, 0, 1.0f); buf.setSample (1, 0, 1.0f); }
+            e.process (buf);
+            for (int i = 0; i < block; ++i) out.push_back (buf.getSample (0, i));
+        }
+
+        int hit = -1;
+        for (size_t i = 0; i < out.size(); ++i)
+            if (std::abs (out[i]) > 1.0e-4f) { hit = (int) i; break; }
+
+        check (hit >= expected - 1, "first repeat is never earlier than the floor");
+    }
+}
+
 void testMonoAndBlockSizes()
 {
     for (int nch : { 1, 2 })
@@ -608,6 +647,7 @@ int main()
     test ("EQ accumulates, rep 1 already filtered", testEqAccumulates);
     test ("integer rates are lossless", testIntegerRatesAreLossless);
     test ("positional envelope un-fades", testPositionalEnvelope);
+    test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);

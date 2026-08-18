@@ -41,6 +41,8 @@ Engine invariants worth knowing before changing it:
 - The period ends at the *current* effective T, not the length latched at the boundary —
   that is what makes a 20 s to 200 ms shrink react in 200 ms. TAPE spacing is the one
   exception, where the latched voice duration is the period.
+- The shortest period is the host's buffer size, not `kMinDelayMs` — that constant is only
+  the `time_ms` parameter floor. The UI shows the real period when the clamp binds.
 - Fades are positional (computed from the voice's state each sample), never latched
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long

@@ -51,12 +51,14 @@ float softClip (float x, bool on) noexcept
 }
 
 //==============================================================================
-void DelayEngine::prepare (double sampleRate, int, int nch)
+void DelayEngine::prepare (double sampleRate, int maxBlockSize, int nch)
 {
     sr = sampleRate;
     numChannels = juce::jlimit (1, 2, nch);
     maxLen = (int) std::ceil (kMaxRepSeconds * sr);
-    minPeriod = juce::jmax (1, (int) std::ceil (kMinDelayMs * 0.001 * sr));
+    // A period shorter than one block would open several generations inside a single
+    // process call, so the floor is the host's buffer size.
+    minPeriod = juce::jmax (1, maxBlockSize);
 
     for (auto& g : gens)
         g.buf.setSize (numChannels, maxLen, false, true, false);

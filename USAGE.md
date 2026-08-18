@@ -14,7 +14,7 @@ instead of being cut short.
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
 | **GRID / TAPE** | When the next repetition starts — see below. |
 | **SPEED** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. |
-| **1/4 1/2 1 2 4** | Speed shortcuts. They write the speed parameter, so they glide rather than jump. |
+| **speed grid** | 3x3 shortcuts: octaves at 1/4, 1/2, 1, 2, 4 and fourths/fifths in between. They write the speed parameter, so they glide rather than jump. |
 | **FEEDBACK** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. |
 | **RAW / STABLE** | Whether the varispeed compounds each generation — see below. |
 | **CLIP** | Soft clip in the recycle path. On by default. |
@@ -49,7 +49,7 @@ Hover any control for a one-line description in the footer.
   stays in time. Slow repeats overlap the next ones.
 - **TAPE** starts the next repetition when the previous one *ends*, which is what a tape
   loop with a detuned motor does. Repeats then accelerate at `r > 1` and decelerate at
-  `r < 1` — `T`, `T/r`, `T/r²`, … — until they hit the 10 ms / 20 s clamp. The time knob
+  `r < 1` — `T`, `T/r`, `T/r²`, … — until they hit the buffer-size / 20 s clamp. The time knob
   sets only the *first* period; after that the grid runs away. Nothing overlaps in TAPE.
   At `r = 1` TAPE and GRID are identical.
 
@@ -59,6 +59,11 @@ Hover any control for a one-line description in the footer.
   `n` inside a period returns after `T + n(1/r − 1)`, not exactly `T`. At `r > 1` the
   material is compressed toward the boundary, at `r < 1` stretched away from it. This is
   inherent to chunked varispeed; the *spacing* of repetitions is still exactly `T`.
+- **The delay time cannot go below one audio buffer.** The knob starts at 10 ms, but the
+  engine floors the period at the host's buffer size, so a 2048-sample buffer at 44.1 kHz
+  means a 46 ms minimum. Below that a single `processBlock` would open several generations
+  at once. When the floor binds, the TIME readout shows the real period rather than the
+  knob's value.
 - **Overlap gain.** Four overlapping repeats at feedback 1 sum to roughly +12 dB. There is
   no automatic compensation, because a `1/sqrt(voices)` scaling would pump as voices come
   and go. The soft clip bounds the loop and the WET knob is the trim.

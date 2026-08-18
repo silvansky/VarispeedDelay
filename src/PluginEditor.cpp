@@ -19,14 +19,20 @@ constexpr int kSpeedGridCols = 3;
 constexpr float kSpeedPresetSemis[] { -24.0f, -12.0f, -7.0f,
                                        -5.0f,   0.0f,  5.0f,
                                         7.0f,  12.0f, 24.0f };
-constexpr const char* kSpeedPresetNames[] { "1/4",  "1/2", "5\u2193",
-                                            "4\u2193", "1",   "4\u2191",
-                                            "5\u2191", "2",   "4" };
+constexpr const char* kSpeedPresetNames[] { "1/4", "1/2", "5dn",
+                                            "4dn", "1",   "4up",
+                                            "5up", "2",   "4" };
 constexpr const char* kSpeedPresetDesc[] { "two octaves down", "one octave down", "a fifth down",
                                            "a fourth down",    "unison",          "a fourth up",
                                            "a fifth up",       "one octave up",   "two octaves up" };
 
 float speedForPreset (int i) { return std::pow (2.0f, kSpeedPresetSemis[i] / 12.0f); }
+
+juce::String msText (double ms)
+{
+    return ms < 1000.0 ? juce::String (ms, ms < 100.0 ? 1 : 0) + " ms"
+                       : juce::String (ms / 1000.0, 2) + " s";
+}
 
 void drawPanel (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& title)
 {
@@ -482,13 +488,14 @@ void VarispeedDelayEditor::timerCallback()
     }
     else if (bend)
     {
-        const double ms = proc.getEngine().getPeriodMs();
-        timeKnob->setValueOverride (ms < 1000.0 ? juce::String (ms, 1) + " ms"
-                                                : juce::String (ms / 1000.0, 2) + " s");
+        timeKnob->setValueOverride (msText (proc.getEngine().getPeriodMs()));
     }
     else
     {
-        timeKnob->setValueOverride ({});
+        // the engine floors the period at one buffer — show that rather than the knob's lie
+        const double minMs = proc.getEngine().getMinPeriodMs();
+        const double asked = proc.getAPVTS().getRawParameterValue (pid::timeMs)->load();
+        timeKnob->setValueOverride (asked < minMs - 0.01 ? msText (minMs) : juce::String());
     }
     timeKnob->slider.setEnabled (! sync);
 }
@@ -512,14 +519,15 @@ void VarispeedDelayEditor::updateDynamicHelp()
     const double periodMs = e.getPeriodMs();
     const double repMs = e.getRepetitionMs();
 
-    auto fmt = [] (double ms) {
-        return ms < 1000.0 ? juce::String (ms, 0) + " ms" : juce::String (ms / 1000.0, 2) + " s";
-    };
+    const double minMs = e.getMinPeriodMs();
+    const bool floored = proc.getAPVTS().getRawParameterValue (pid::timeMs)->load() < minMs - 0.01;
 
-    setHelp (*timeKnob, "Delay time — " + fmt (periodMs) + " period, repetition lasts "
-                        + fmt (repMs) + ", " + juce::String (voices) + " sounding");
-    setHelp (*speedKnob, "Tape speed — repetition lasts " + fmt (repMs)
-                         + " on a " + fmt (periodMs) + " grid; below 1x repeats overlap");
+    setHelp (*timeKnob, "Delay time — " + msText (periodMs) + " period, repetition lasts "
+                        + msText (repMs) + ", " + juce::String (voices) + " sounding"
+                        + (floored ? ". Floored at the " + msText (minMs) + " audio buffer"
+                                   : juce::String()));
+    setHelp (*speedKnob, "Tape speed — repetition lasts " + msText (repMs)
+                         + " on a " + msText (periodMs) + " grid; below 1x repeats overlap");
 }
 
 void VarispeedDelayEditor::updateFooter()

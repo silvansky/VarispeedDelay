@@ -85,6 +85,10 @@ public:
     int    getActiveVoices() const noexcept { return uiVoices.load (std::memory_order_relaxed); }
     int    getVoiceSnapshot (VoiceInfo* dest, int maxCount) const;
 
+    /** Shortest period the engine will run — the host's buffer size. */
+    int    getMinPeriodSamples() const noexcept { return minPeriod; }
+    double getMinPeriodMs() const noexcept { return minPeriod / sr * 1000.0; }
+
     // test hooks
     int  getGenWritten (int slot) const noexcept { return gens[slot].written; }
     const Voice& getVoice (int i) const noexcept { return voices[i]; }
