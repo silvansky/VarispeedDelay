@@ -344,6 +344,13 @@ because they are the point of the mode rather than defects:
 - Repeats accelerate at `r > 1` and decelerate at `r < 1` — `T`, `T/r`, `T/r²`, … The
   time knob sets only the *first* period; after that the grid runs away by `r` per
   generation until it hits a clamp, where it stays and becomes a fixed-period delay.
+- **`Dmax` is `kMaxRepSeconds` in TAPE, not `min(4T, kMaxRepSeconds)`.** The factor 4
+  bounds how many repetitions sound at once, and in TAPE they never overlap, so applying
+  it there buys nothing and truncates the runaway early: at `T = 2 s, r = 0.5` it recorded
+  8 s windows and replayed only the first 4 s of each from the third generation on.
+- Once the repetition reaches the ceiling, truncation is unavoidable — replaying a window
+  takes `1/r` times longer than recording it, so at `r < 1` the mode always outruns itself
+  in the end. Document it; GRID is the mode that replays every window whole.
 - The recording window runs away with it, so fresh input echoes sooner (or later) as the
   runaway proceeds. Delay time stops being a promise about new material too.
 - Nothing overlaps and nothing chases: voice `k+1` spawns exactly when voice `k` ends, so

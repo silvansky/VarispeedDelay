@@ -53,6 +53,14 @@ Hover any control for a one-line description in the footer.
   sets only the *first* period; after that the grid runs away. Nothing overlaps in TAPE.
   At `r = 1` TAPE and GRID are identical.
 
+  **Below 1x the mode outruns itself.** Each generation records the previous repetition's
+  duration, but replaying that recording takes `1/r` times as long again, so the windows
+  double (at 0.5x) every generation: 2 s, 4 s, 8 s, 16 s... Once a repetition would exceed
+  the 20 s ceiling it is truncated, and from then on you hear only the first part of each
+  window — at 0.5x, half of it. That is arithmetic, not a defect: a tape that keeps slowing
+  down can never replay everything it recorded. If you want every repetition complete, use
+  **GRID**, where a 2 s window is always replayed in full over 4 s at 0.5x.
+
 ## Things that are deliberate, not defects
 
 - **The grid is `T`, but material inside a repetition is not.** An input event at offset

@@ -93,6 +93,7 @@ public:
     int  getGenWritten (int slot) const noexcept { return gens[slot].written; }
     const Voice& getVoice (int i) const noexcept { return voices[i]; }
     double getEffectiveTimeSamples() const noexcept { return tEff; }
+    int    getPeriodSamples() const noexcept { return periodLen; }
     double getBendFactor() const noexcept { return lastBend; }
     bool   readOverrun() const noexcept { return overrun; }
     int    maxConcurrentVoices() const noexcept { return peakVoices; }

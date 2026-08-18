@@ -711,6 +711,38 @@ void testNoAllocationInProcess()
     if (n != 0) std::printf ("     %d allocations during process()\n", n);
 }
 
+void testTapeReplaysWholeWindow()
+{
+    // TAPE at 0.5x: each generation records the previous repetition's duration, so the
+    // windows run away. Nothing may be truncated until a repetition would exceed the
+    // 20 s buffer ceiling — capping at 4x the delay time instead threw away half of
+    // every window from the third generation on.
+    Rig r;
+    r.s.timeMs = 2000.0;
+    r.s.spacing = Spacing::Tape;
+    r.s.speed = 0.5;
+    r.s.feedback = 0.0f;
+    r.apply();
+
+    int lastPeriod = -1;
+    double prevWindow = 0.0;
+    int gen = 0;
+    for (int done = 0; done < (int) (kSr * 120); done += kBlock)
+    {
+        r.run (kBlock, [] (int i) { return 0.3f * (float) std::sin (i * 0.01); });
+        const int p = r.engine.getPeriodSamples();
+        if (p == lastPeriod) continue;
+        lastPeriod = p;
+
+        const double rep = r.engine.getRepetitionMs() / 1000.0;
+        if (gen++ >= 3 && rep < kMaxRepSeconds - 0.5)
+            checkNear (rep, prevWindow / 0.5, 0.2,
+                       "repetition replays its whole source window below the ceiling");
+        prevWindow = p / kSr;
+    }
+    check (gen > 3, "the tape runaway actually produced several generations");
+}
+
 void testMinimumPeriodIsOneBuffer()
 {
     // asking for less than a buffer must give a period of exactly one buffer
@@ -808,6 +840,7 @@ int main()
     test ("no splice at the input/recycle join", testNoSpliceInsideGeneration);
     test ("unity is clean after a speed change", testUnityAfterSpeedChange);
     test ("no allocation on the audio thread", testNoAllocationInProcess);
+    test ("TAPE replays its whole window", testTapeReplaysWholeWindow);
     test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
 

@@ -111,7 +111,9 @@ void DelayEngine::reset()
 
 void DelayEngine::updateTail()
 {
-    const double dmax = std::min (kOverlapFactor * tLatched, (double) maxLen);
+    const double dmax = settings.spacing == Spacing::Tape
+                          ? (double) maxLen
+                          : std::min (kOverlapFactor * tLatched, (double) maxLen);
     tailSeconds.store (kTailGenerations * dmax / sr, std::memory_order_relaxed);
 }
 
@@ -298,7 +300,13 @@ void DelayEngine::openGeneration (double rEff)
         v.dst = slot;
         v.fbType = settings.fbType;
         v.order = ++spawnOrder;
-        v.dmax = std::min (kOverlapFactor * tEff, (double) maxLen);
+        // The 4x factor exists to bound how many repetitions can sound at once, which only
+        // happens in GRID. TAPE repetitions are back to back, so capping them at 4T buys
+        // nothing and truncates the runaway long before the buffer is full: at 0.5x it would
+        // record 8 s windows and replay only the first 4 s of each.
+        v.dmax = settings.spacing == Spacing::Tape
+                   ? (double) maxLen
+                   : std::min (kOverlapFactor * tEff, (double) maxLen);
 
         const double dEst = srcLen / std::max (rEff, 1.0e-6);
         v.predDur = std::min (dEst, v.dmax);
