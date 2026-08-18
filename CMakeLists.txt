@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(VarispeedDelay VERSION 0.1.0)
+project(VarispeedDelay VERSION 0.1.1)
 
 add_subdirectory(libs/JUCE)
 
