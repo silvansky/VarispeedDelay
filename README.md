@@ -41,9 +41,13 @@ Artefacts land in `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`
 
 ## Licence
 
-This project's own code is MIT — see `LICENSE`. JUCE is a submodule and carries its own
-terms (AGPLv3 or a commercial JUCE licence), which govern anything you build and
-distribute with it.
+This project uses JUCE under the **AGPLv3**, so any plugin binary built from this
+repository is a combined work covered by the AGPLv3 — see `LICENSE`. Distributing such a
+binary means making the complete corresponding source available to its recipients.
+
+The code written for this project (`src/`, `tests/`, the CMake files) is additionally
+offered under the **MIT License** (`LICENSE-MIT`) when used independently of JUCE, so the
+delay engine and EQ can be reused freely. `COPYRIGHT.md` spells this out.
 
 ## Status
 
