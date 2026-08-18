@@ -64,6 +64,9 @@ Engine invariants worth knowing before changing it:
 - Self-documenting code, no comments unless critical. Minimal diffs.
 - Commits: imperative, short, no period.
 - JUCE Font API: `juce::FontOptions(size)`, not the deprecated float constructor.
+- **ASCII only in string literals.** `juce::String (const char*)` decodes as Latin-1, not
+  UTF-8, so an em-dash or arrow in a UI string arrives as mojibake. Write `-`, not `—`.
+  Comments are unaffected.
 
 ## Presets
 

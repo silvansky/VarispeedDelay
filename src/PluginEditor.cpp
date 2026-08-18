@@ -176,14 +176,14 @@ void VarispeedDelayEditor::buildControls()
     auto& s = proc.getAPVTS();
 
     timeKnob = std::make_unique<LabeledKnob> (s, pid::timeMs, "TIME",
-        "Delay time — the period between repetitions");
+        "Delay time - the period between repetitions");
     speedKnob = std::make_unique<LabeledKnob> (s, pid::speed, "SPEED",
-        "Tape speed of every repetition — pitch and length change together");
+        "Tape speed of every repetition - pitch and length change together");
     feedbackKnob = std::make_unique<LabeledKnob> (s, pid::feedback, "FEEDBACK",
-        "Recycle gain. Above 1.0 the loop runs away — the soft clip keeps it musical");
+        "Recycle gain. Above 1.0 the loop runs away - the soft clip keeps it musical");
     dryKnob = std::make_unique<LabeledKnob> (s, pid::dry, "DRY", "Dry signal level");
     wetKnob = std::make_unique<LabeledKnob> (s, pid::wet, "WET",
-        "Wet level — the trim for overlapping repetitions, which sum without compensation");
+        "Wet level. Overlapping repeats sum without compensation, so this is the trim");
 
     for (auto* k : { timeKnob.get(), speedKnob.get(), feedbackKnob.get(), dryKnob.get(), wetKnob.get() })
         addAndMakeVisible (*k);
@@ -198,18 +198,15 @@ void VarispeedDelayEditor::buildControls()
     syncSwitch = std::make_unique<ChoiceSwitch> (*pSync, juce::StringArray { "FREE", "SYNC" },
         "FREE reads the time knob; SYNC locks the period to the host grid");
     timeModeSwitch = std::make_unique<ChoiceSwitch> (*pMode, juce::StringArray { "REGRID", "BEND" },
-        "REGRID snaps to the new time and leaves the tail alone; "
-        "BEND slews the time and doppler-bends everything sounding");
+        "REGRID snaps to the new time and leaves the tail alone. BEND bends everything sounding");
     spacingSwitch = std::make_unique<ChoiceSwitch> (*pSpacing, juce::StringArray { "GRID", "TAPE" },
-        "GRID keeps repetitions on the delay grid; "
-        "TAPE starts the next one when the previous ends, so the grid runs away by the speed");
+        "GRID keeps repetitions on the delay grid. TAPE starts each one when the last ends");
     fbTypeSwitch = std::make_unique<ChoiceSwitch> (*pFb, juce::StringArray { "RAW", "STABLE" },
-        "RAW recycles the varispeed signal, so pitch compounds each repetition; "
-        "STABLE recycles a unity copy, so every repetition plays at the same speed");
+        "RAW: pitch compounds each repetition. STABLE: every repetition plays at the same speed");
     clipSwitch = std::make_unique<ChoiceSwitch> (*pClip, juce::StringArray { "NO CLIP", "CLIP" },
-        "Soft clip in the recycle path — transparent below -6 dBFS, bounds runaway above it");
+        "Soft clip in the recycle path - transparent below -6 dBFS, bounds runaway above it");
     eqOnSwitch = std::make_unique<ChoiceSwitch> (*pEq, juce::StringArray { "OFF", "ON" },
-        "7-band EQ on the repetition path — repetition N carries the curve N times");
+        "7-band EQ on the repetition path - repetition N carries the curve N times");
 
     for (auto* c : { syncSwitch.get(), timeModeSwitch.get(), spacingSwitch.get(),
                      fbTypeSwitch.get(), clipSwitch.get(), eqOnSwitch.get() })
@@ -232,7 +229,7 @@ void VarispeedDelayEditor::buildControls()
         // only unity and the octaves up read at integer positions
         const bool lossless = kSpeedPresetSemis[i] >= 0.0f
                               && std::abs (std::fmod (kSpeedPresetSemis[i], 12.0f)) < 0.01f;
-        setHelp (*b, "Speed " + juce::String (target, 3) + "x — " + kSpeedPresetDesc[i]
+        setHelp (*b, "Speed " + juce::String (target, 3) + "x - " + kSpeedPresetDesc[i]
                      + (lossless ? ". Integer read positions, so no generational loss"
                                  : ". Interpolated, so the tail darkens a little each repetition"));
         addAndMakeVisible (b);
@@ -249,7 +246,7 @@ void VarispeedDelayEditor::buildControls()
         const auto f = GraphicEQ::bandFreq[i];
         const auto label = f >= 1000.0f ? juce::String (f / 1000.0f, f == 16000.0f ? 0 : 1) + "k"
                                         : juce::String ((int) f);
-        setHelp (*sl, label + " Hz band, +/-12 dB — applied once per repetition, so it accumulates");
+        setHelp (*sl, label + " Hz band, +/-12 dB - applied once per repetition, so it accumulates");
         addAndMakeVisible (sl);
         eqSliders.add (sl);
         eqAttachments.add (new juce::AudioProcessorValueTreeState::SliderAttachment (
@@ -273,7 +270,7 @@ void VarispeedDelayEditor::buildControls()
 
     contextHelpLabel.setFont (juce::FontOptions (10.0f));
     contextHelpLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim));
-    contextHelpLabel.setMinimumHorizontalScale (1.0f);
+    contextHelpLabel.setMinimumHorizontalScale (0.8f);
     contextHelpLabel.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (contextHelpLabel);
 
@@ -284,7 +281,7 @@ void VarispeedDelayEditor::buildControls()
     footerLabel.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (footerLabel);
 
-    setHelp (presetBox, "Factory and user presets — user presets come from VSPD_PRESET_DIR");
+    setHelp (presetBox, "Factory and user presets - user presets come from VSPD_PRESET_DIR");
     presetBox.onChange = [this]
     {
         const int idx = presetBox.getSelectedId() - 1;
@@ -445,12 +442,7 @@ void VarispeedDelayEditor::resized()
     ba.removeFromLeft (12);
     repView.setBounds (ba);
 
-    // ---- footer -----------------------------------------------------------
-    auto fa = footerArea.reduced (10, 2);
-    helpButton.setBounds (fa.removeFromLeft (20));
-    fa.removeFromLeft (4);
-    contextHelpLabel.setBounds (fa.removeFromLeft (juce::jmin (330, fa.getWidth() / 2)));
-    footerLabel.setBounds (fa);
+    layoutFooter();
 }
 
 //==============================================================================
@@ -526,12 +518,28 @@ void VarispeedDelayEditor::updateDynamicHelp()
     const double minMs = e.getMinPeriodMs();
     const bool floored = proc.getAPVTS().getRawParameterValue (pid::timeMs)->load() < minMs - 0.01;
 
-    setHelp (*timeKnob, "Delay time — " + msText (periodMs) + " period, repetition lasts "
+    setHelp (*timeKnob, "Delay time - " + msText (periodMs) + " period, repetition lasts "
                         + msText (repMs) + ", " + juce::String (voices) + " sounding"
                         + (floored ? ". Floored at the " + msText (minMs) + " audio buffer"
                                    : juce::String()));
-    setHelp (*speedKnob, "Tape speed — repetition lasts " + msText (repMs)
+    setHelp (*speedKnob, "Tape speed - repetition lasts " + msText (repMs)
                          + " on a " + msText (periodMs) + " grid; below 1x repeats overlap");
+}
+
+void VarispeedDelayEditor::layoutFooter()
+{
+    auto fa = footerArea.reduced (10, 2);
+    helpButton.setBounds (fa.removeFromLeft (20));
+    fa.removeFromLeft (4);
+
+    // give the version block exactly what it needs and hand the rest to the help text,
+    // which is the part that actually has something to say
+    const auto font = footerLabel.getFont();
+    const int needed = juce::GlyphArrangement::getStringWidthInt (font, footerLabel.getText()) + 6;
+    const int forFooter = juce::jlimit (0, juce::jmax (0, fa.getWidth() - 120), needed);
+
+    footerLabel.setBounds (fa.removeFromRight (forFooter));
+    contextHelpLabel.setBounds (fa);
 }
 
 void VarispeedDelayEditor::updateFooter()
@@ -551,5 +559,9 @@ void VarispeedDelayEditor::updateFooter()
 
     text << " | v" << JucePlugin_VersionString << " (" << VARISPEEDDELAY_BUILD_DATE << ")";
 
-    if (footerLabel.getText() != text) footerLabel.setText (text, juce::dontSendNotification);
+    if (footerLabel.getText() != text)
+    {
+        footerLabel.setText (text, juce::dontSendNotification);
+        layoutFooter();
+    }
 }

@@ -56,6 +56,7 @@ private:
     void timerCallback() override;
     void buildControls();
     void updateFooter();
+    void layoutFooter();
     void updateDynamicHelp();
     void updateSpeedPresets();
     void showSaveDialog();

@@ -5,8 +5,7 @@ using namespace vspd;
 RepetitionView::RepetitionView (DelayEngine& e) : engine (e)
 {
     setInterceptsMouseClicks (true, false);   // needed for hover help; nothing acts on clicks
-    getProperties().set ("help", "Live repetitions — bar length is the repeat's duration, "
-                                 "the marker is its playback position");
+    getProperties().set ("help", "Live repetitions. Bar length is the repeat's duration, the marker is its position");
 }
 
 void RepetitionView::refresh()
