@@ -13,8 +13,20 @@ namespace
 {
 constexpr int kFooterH = 20;
 constexpr int kHeaderH = 32;
-constexpr float kSpeedPresets[] { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
-constexpr const char* kSpeedPresetNames[] { "1/4", "1/2", "1", "2", "4" };
+// 3x3 grid, ascending pitch in reading order: octaves where the user expects them,
+// fourths and fifths filling the gaps.
+constexpr int kSpeedGridCols = 3;
+constexpr float kSpeedPresetSemis[] { -24.0f, -12.0f, -7.0f,
+                                       -5.0f,   0.0f,  5.0f,
+                                        7.0f,  12.0f, 24.0f };
+constexpr const char* kSpeedPresetNames[] { "1/4",  "1/2", "5\u2193",
+                                            "4\u2193", "1",   "4\u2191",
+                                            "5\u2191", "2",   "4" };
+constexpr const char* kSpeedPresetDesc[] { "two octaves down", "one octave down", "a fifth down",
+                                           "a fourth down",    "unison",          "a fourth up",
+                                           "a fifth up",       "one octave up",   "two octaves up" };
+
+float speedForPreset (int i) { return std::pow (2.0f, kSpeedPresetSemis[i] / 12.0f); }
 
 void drawPanel (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& title)
 {
@@ -205,18 +217,23 @@ void VarispeedDelayEditor::buildControls()
         s, pid::timeDiv, divBox);
 
     auto* speedParam = s.getParameter (pid::speed);
-    for (int i = 0; i < (int) std::size (kSpeedPresets); ++i)
+    for (int i = 0; i < (int) std::size (kSpeedPresetSemis); ++i)
     {
         auto* b = new juce::TextButton (kSpeedPresetNames[i]);
         b->setClickingTogglesState (false);
-        setHelp (*b, juce::String ("Set speed to ") + kSpeedPresetNames[i]
-                     + "x — integer rates read at integer positions, so they stay lossless");
+
+        const float target = speedForPreset (i);
+        // only unity and the octaves up read at integer positions
+        const bool lossless = kSpeedPresetSemis[i] >= 0.0f
+                              && std::abs (std::fmod (kSpeedPresetSemis[i], 12.0f)) < 0.01f;
+        setHelp (*b, "Speed " + juce::String (target, 3) + "x — " + kSpeedPresetDesc[i]
+                     + (lossless ? ". Integer read positions, so no generational loss"
+                                 : ". Interpolated, so the tail darkens a little each repetition"));
         addAndMakeVisible (b);
         speedPresets.add (b);
 
         auto* att = new juce::ParameterAttachment (*speedParam, [] (float) {});
         speedPresetAttachments.add (att);
-        const float target = kSpeedPresets[i];
         b->onClick = [att, target] { att->setValueAsCompleteGesture (target); };
     }
 
@@ -375,11 +392,19 @@ void VarispeedDelayEditor::resized()
     speedKnob->setBounds (speedCol.removeFromLeft (86));
     speedCol.removeFromLeft (8);
     {
-        auto rows = speedCol.withTrimmedTop (46);
-        auto row = rows.removeFromTop (24);
-        const int bw = row.getWidth() / speedPresets.size();
-        for (auto* b : speedPresets)
-            b->setBounds (row.removeFromLeft (bw).reduced (2, 0));
+        constexpr int cellH = 26, gap = 3;
+        const int rows = (speedPresets.size() + kSpeedGridCols - 1) / kSpeedGridCols;
+        auto grid = speedCol.withSizeKeepingCentre (speedCol.getWidth(),
+                                                    rows * cellH + (rows - 1) * gap);
+        for (int r = 0; r < rows; ++r)
+        {
+            auto row = grid.removeFromTop (cellH);
+            grid.removeFromTop (gap);
+            const int bw = row.getWidth() / kSpeedGridCols;
+            for (int c = 0; c < kSpeedGridCols; ++c)
+                if (auto* b = speedPresets[r * kSpeedGridCols + c])
+                    b->setBounds (row.removeFromLeft (bw).reduced (2, 0));
+        }
     }
 
     auto fbCol = ca.reduced (6, 0);
@@ -473,7 +498,7 @@ void VarispeedDelayEditor::updateSpeedPresets()
     const float speed = proc.getAPVTS().getRawParameterValue (pid::speed)->load();
     for (int i = 0; i < speedPresets.size(); ++i)
     {
-        const float cents = 1200.0f * std::log2 (juce::jmax (1.0e-6f, speed) / kSpeedPresets[i]);
+        const float cents = 1200.0f * std::log2 (juce::jmax (1.0e-6f, speed) / speedForPreset (i));
         const bool on = std::abs (cents) < 1.0f;
         if (speedPresets[i]->getToggleState() != on)
             speedPresets[i]->setToggleState (on, juce::dontSendNotification);

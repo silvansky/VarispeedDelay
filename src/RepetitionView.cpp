@@ -33,13 +33,7 @@ void RepetitionView::paint (juce::Graphics& g)
     for (float t = 0.0f; t <= span; t += juce::jmax (1.0f, periodMs))
         g.drawVerticalLine ((int) (b.getX() + b.getWidth() * t / span), b.getY(), b.getBottom());
 
-    if (count == 0)
-    {
-        g.setColour (juce::Colour (col::dim));
-        g.setFont (juce::FontOptions (11.0f));
-        g.drawText ("no repetitions", b, juce::Justification::centred, false);
-        return;
-    }
+    if (count == 0) return;
 
     const float rowH = juce::jmin (14.0f, b.getHeight() / (float) juce::jmax (1, count));
     for (int i = 0; i < count; ++i)
