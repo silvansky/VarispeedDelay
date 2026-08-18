@@ -1,0 +1,113 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-14
+          - name: Windows
+            os: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # JUCE is a submodule; a plain checkout will not configure
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          v=$(sed -n 's/.*project(VarispeedDelay VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "building $v"
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p artifacts
+          A=build/VarispeedDelay_artefacts/Release
+          for pair in "AU/VarispeedDelay.component:AU" \
+                      "VST3/VarispeedDelay.vst3:VST3" \
+                      "Standalone/VarispeedDelay.app:Standalone"; do
+            src="${pair%%:*}"; label="${pair##*:}"
+            codesign --force --deep --sign - "$A/$src"
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$A/$src" "artifacts/VarispeedDelay-$V-macOS-$label.zip"
+          done
+          lipo -archs "$A/Standalone/VarispeedDelay.app/Contents/MacOS/VarispeedDelay"
+          ls -lh artifacts
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $a = "build/VarispeedDelay_artefacts/Release"
+          Compress-Archive -Path "$a/VST3/VarispeedDelay.vst3" `
+            -DestinationPath "artifacts/VarispeedDelay-$env:V-Windows-VST3.zip"
+          Compress-Archive -Path "$a/Standalone/VarispeedDelay.exe" `
+            -DestinationPath "artifacts/VarispeedDelay-$env:V-Windows-Standalone.zip"
+          Get-ChildItem artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VarispeedDelay-${{ matrix.name }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$REPO" \
+                 --title "VarispeedDelay ${TAG#v}" --generate-notes
+          gh release upload "$TAG" --repo "$REPO" dist/*.zip --clobber
