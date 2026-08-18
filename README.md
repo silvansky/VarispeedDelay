@@ -3,6 +3,8 @@
 JUCE audio plugin (VST3 / AU / Standalone): a delay where every repetition is replayed at
 a different tape speed — pitch and duration change together.
 
+![VarispeedDelay](docs/screenshot.png)
+
 - time knob, free (0.1 ms – 20 s, floored at the audio buffer) or tempo-synced (up to 2 bars)
 - speed knob 1/4x – 4x, with a 3x3 shortcut grid: octaves plus fourths and fifths
 - feedback 0–2, raw (cumulative varispeed) or stable (one-shot varispeed) recycling
