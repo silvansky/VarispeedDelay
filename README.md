@@ -37,6 +37,12 @@ Artefacts land in `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`
 | `plan.md` | the design: generation/voice model, feedback topologies, fades, sync, phases |
 | `CLAUDE.md` | build commands, conventions, and the engine invariants to know before changing it |
 
+## Licence
+
+This project's own code is MIT — see `LICENSE`. JUCE is a submodule and carries its own
+terms (AGPLv3 or a commercial JUCE licence), which govern anything you build and
+distribute with it.
+
 ## Status
 
 Engine, UI, sync, EQ and preset machinery are implemented; all three formats build
