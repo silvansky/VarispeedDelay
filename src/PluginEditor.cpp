@@ -259,7 +259,8 @@ void VarispeedDelayEditor::buildControls()
         lb->setJustificationType (juce::Justification::centred);
         lb->setFont (juce::FontOptions (9.0f));
         lb->setColour (juce::Label::textColourId, juce::Colour (col::dim));
-        lb->setInterceptsMouseClicks (false, false);
+        lb->setInterceptsMouseClicks (true, false);
+        setHelp (*lb, sl->getProperties()["help"].toString());
         addAndMakeVisible (lb);
         eqLabels.add (lb);
     }
@@ -455,12 +456,15 @@ void VarispeedDelayEditor::resized()
 //==============================================================================
 void VarispeedDelayEditor::mouseEnter (const juce::MouseEvent& e)
 {
+    // walk up from the hovered component so a child inherits its panel's help; clear the
+    // label when nothing in the chain carries one, rather than leaving the last one up
+    juce::String help;
     for (auto* c = e.eventComponent; c != nullptr; c = c->getParentComponent())
     {
-        const auto help = c->getProperties()["help"].toString();
-        if (help.isNotEmpty()) { contextHelpLabel.setText (help, juce::dontSendNotification); return; }
-        if (c == this) break;
+        help = c->getProperties()["help"].toString();
+        if (help.isNotEmpty() || c == this) break;
     }
+    contextHelpLabel.setText (help, juce::dontSendNotification);
 }
 
 void VarispeedDelayEditor::mouseExit (const juce::MouseEvent& e)
