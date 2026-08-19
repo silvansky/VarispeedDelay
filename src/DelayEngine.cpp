@@ -65,6 +65,7 @@ void DelayEngine::prepare (double sampleRate, int maxBlockSize, int nch)
 
     eq.prepare (sr);
     speedSm.reset (sr, kSpeedGlideMs * 0.001);
+    bendGoal.reset (sr, kTimeGlideMs * 0.001);
     fbSm.reset (sr, 0.02);
     drySm.reset (sr, 0.02);
     wetSm.reset (sr, 0.02);
@@ -86,6 +87,7 @@ void DelayEngine::reset()
 
     tLatched = juce::jlimit ((double) minPeriod, (double) maxLen, settings.timeMs * 0.001 * sr);
     tTarget = tEff = tLatched;
+    bendGoal.setCurrentAndTargetValue (tLatched);
     periodLen = juce::jmax (minPeriod, (int) std::round (tEff));
     lastBend = 1.0;
 
@@ -137,9 +139,12 @@ void DelayEngine::updateTiming (int numSamples)
     double newT = wantSync ? (60.0 / bpm * quarters * sr) : (settings.timeMs * 0.001 * sr);
     newT = juce::jlimit ((double) minPeriod, (double) maxLen, newT);
 
-    // relative, with a one-sample floor — anything finer than a sample is float noise,
-    // and a fixed millisecond floor would make sub-millisecond periods unreachable
-    const double deadband = std::max (0.005 * tLatched, 1.0);
+    // REGRID re-splices on every latch, so it needs the relative deadband; anything finer
+    // than a sample is float noise, and a fixed millisecond floor would make sub-millisecond
+    // periods unreachable. BEND glides instead of splicing, so it tracks the knob directly -
+    // quantising its target to 0.5 % steps is what turns a drag into a staircase.
+    const bool bendMode = settings.timeMode == TimeMode::Bend;
+    const double deadband = bendMode ? 1.0 : std::max (0.005 * tLatched, 1.0);
     if (std::abs (newT - tLatched) >= deadband)
     {
         tLatched = newT;
@@ -148,6 +153,11 @@ void DelayEngine::updateTiming (int numSamples)
         updateTail();
     }
     tTarget = tLatched;
+    // The knob arrives as one step per block. Ramping the goal spreads each step over the
+    // interval it covers, so the bend factor follows the drag rate instead of pulsing to
+    // the rate limit and back between blocks.
+    if (bendMode) bendGoal.setTargetValue (tTarget);
+    else          bendGoal.setCurrentAndTargetValue (tTarget);
 
     const bool nowSync = wantSync && transportRunning;
     if (nowSync)
@@ -392,7 +402,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         double m = 1.0;
         if (bend)
         {
-            const double dT = juce::jlimit (-kBendDown, kBendUp, tTarget - tEff);
+            const double dT = juce::jlimit (-kBendDown, kBendUp, bendGoal.getNextValue() - tEff);
             tEff += dT;
             m = 1.0 - dT;
         }
@@ -598,7 +608,8 @@ void DelayEngine::publishUi()
         }
     }
     uiVoices.store (count, std::memory_order_relaxed);
-    uiPeriodMs.store (tEff / sr * 1000.0, std::memory_order_relaxed);
+    uiPeriodMs.store (periodLen / sr * 1000.0, std::memory_order_relaxed);
+    uiEffTimeMs.store (tEff / sr * 1000.0, std::memory_order_relaxed);
     if (repMs > 0.0) uiRepMs.store (repMs, std::memory_order_relaxed);
 }
 

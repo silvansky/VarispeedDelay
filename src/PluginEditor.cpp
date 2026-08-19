@@ -491,7 +491,7 @@ void VarispeedDelayEditor::timerCallback()
     }
     else if (bend)
     {
-        timeKnob->setValueOverride (msText (proc.getEngine().getPeriodMs()));
+        timeKnob->setValueOverride (msText (proc.getEngine().getEffectiveTimeMs()));
     }
     else
     {
@@ -522,8 +522,10 @@ void VarispeedDelayEditor::updateDynamicHelp()
     const double periodMs = e.getPeriodMs();
     const double repMs = e.getRepetitionMs();
 
+    // TAPE runs the grid away from the knob until it bottoms out here, so test the period
+    // the engine actually uses rather than what was asked for
     const double minMs = e.getMinPeriodMs();
-    const bool floored = proc.getAPVTS().getRawParameterValue (pid::timeMs)->load() < minMs - 0.01;
+    const bool floored = periodMs < minMs + 0.01;
 
     setHelp (*timeKnob, "Delay time - " + msText (periodMs) + " period, repetition lasts "
                         + msText (repMs) + ", " + juce::String (voices) + " sounding"

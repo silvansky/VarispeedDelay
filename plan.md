@@ -244,6 +244,10 @@ Both modes share these rules:
    one sample, not 1 ms, so that sub-millisecond periods stay reachable; anything finer
    than a sample is float noise by definition.)
 
+   The relative part of that threshold is REGRID's, because REGRID is what re-splices on a
+   latch. BEND glides instead, and quantising its target to 0.5 % steps is what turns a
+   knob drag into a staircase, so in BEND the deadband is the one-sample floor alone.
+
 ### REGRID
 
 `T_eff = T_target` immediately, bend factor `m = 1`.
@@ -259,11 +263,17 @@ grid — the delay cross-fades between grids instead of dragging.
 multiplied by the resulting bend factor:
 
 ```
-dT = clamp(T_target - T_eff, -kBendDown, +kBendUp) per sample   // kBendDown 3, kBendUp 0.75
+goal   = ramp(T_target) over kTimeGlideMs                       // kTimeGlideMs 50
+dT     = clamp(goal - T_eff, -kBendDown, +kBendUp) per sample   // kBendDown 3, kBendUp 0.75
 T_eff += dT
 m      = 1 - dT                                                 // m ∈ [0.25, 4]
 pOut  += r * m                                                  // all voices, all generations
 ```
+
+`T_target` only moves once per block, so slewing straight at it turns a mouse drag into a
+train of full-rate bursts separated by unity — a stutter, not a bend. Ramping the goal
+across the interval the step covers makes `dT` the drag's own rate: a 500 → 400 ms drag
+over a second holds `m ≈ 1.1` throughout instead of pulsing to 4.
 
 This is the delay-line identity `y(t) = x(t - D(t))`, whose read pointer advances at
 `1 - D'(t)`: shortening the time speeds the tail up and pitches it, lengthening slows and
@@ -472,7 +482,8 @@ they are just shortcuts — no extra parameter.
 
 Smoothing (`juce::SmoothedValue`): speed per sample (`kSpeedGlideMs = 20`, see *Speed
 changes*), feedback / dry / wet per block are fine at ~20 ms. `fb_type` latches at period
-boundaries; `time` is handled by the `time_mode` path above, not by a generic smoother.
+boundaries; `time` is handled by the `time_mode` path above — REGRID snaps, BEND ramps its
+goal over `kTimeGlideMs = 50` before the rate limit sees it.
 
 ## Sync mode
 
@@ -582,7 +593,10 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 ```
 
 Time knob shows ms/s in free mode and the division name in sync mode; in BEND mode the
-readout follows `T_eff` while it slews, so the glide is visible. Speed preset buttons
+readout follows `T_eff` while it slews, so the glide is visible. Everything else that
+names a period — hover help, the repetition view's grid lines — reports the period the
+engine is *running*, which in TAPE is the previous repetition's duration and not the knob:
+at `r > 1` it collapses to the buffer clamp, and the help says so. Speed preset buttons
 highlight when `speed` is within 1 cent of the preset. The optional repetition
 view is the one place the overlap becomes legible — stacked bars, one per live voice,
 length `D[k]`, spaced `T` apart, on a 30 Hz timer.

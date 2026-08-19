@@ -40,8 +40,9 @@ Hover any control for a one-line description in the footer.
   cross-fades between grids instead of dragging.
 - **BEND** slews the time under a rate limit and doppler-bends everything sounding, like a
   tape delay. Shortening speeds the tail up and pitches it; lengthening slows and drops
-  it. A 20 s → 200 ms jump glides over about 6.6 s. The bend is recorded into the recycle
-  path, so the next generation inherits it.
+  it. Dragging the knob bends at the speed of the drag; an instant jump takes the rate
+  limit instead, so 20 s → 200 ms glides over about 6.6 s. The bend is recorded into the
+  recycle path, so the next generation inherits it.
 
 ## The two spacings
 

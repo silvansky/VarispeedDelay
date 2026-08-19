@@ -21,6 +21,7 @@ inline constexpr float  kClipThreshold   = 0.5f;
 inline constexpr float  kClipCeiling     = 1.0f;
 inline constexpr float  kSafetyClamp     = 8.0f;
 inline constexpr double kSpeedGlideMs    = 20.0;
+inline constexpr double kTimeGlideMs     = 50.0;
 inline constexpr double kBendDown        = 3.0;
 inline constexpr double kBendUp          = 0.75;
 inline constexpr double kXfadePct        = 0.05;
@@ -80,7 +81,10 @@ public:
     void process (juce::AudioBuffer<float>& buffer);
 
     double getTailSeconds()  const noexcept { return tailSeconds.load (std::memory_order_relaxed); }
+    /** The period the engine is actually running: in TAPE the previous repetition's
+        duration, not the time knob, and never shorter than one buffer. */
     double getPeriodMs()     const noexcept { return uiPeriodMs.load (std::memory_order_relaxed); }
+    double getEffectiveTimeMs() const noexcept { return uiEffTimeMs.load (std::memory_order_relaxed); }
     double getRepetitionMs() const noexcept { return uiRepMs.load (std::memory_order_relaxed); }
     int    getActiveVoices() const noexcept { return uiVoices.load (std::memory_order_relaxed); }
     int    getVoiceSnapshot (VoiceInfo* dest, int maxCount) const;
@@ -157,10 +161,12 @@ private:
     int    peakVoices = 0;
 
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Multiplicative> speedSm { 1.0 };
+    juce::SmoothedValue<double> bendGoal { 0.0 };
     juce::SmoothedValue<float>  fbSm { 0.5f }, drySm { 1.0f }, wetSm { 0.5f };
 
     std::atomic<double> tailSeconds { 1.0 };
     std::atomic<double> uiPeriodMs { 500.0 };
+    std::atomic<double> uiEffTimeMs { 500.0 };
     std::atomic<double> uiRepMs { 500.0 };
     std::atomic<int>    uiVoices { 0 };
     std::atomic<float>  uiVoiceElapsed[kMaxVoices] {};

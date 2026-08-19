@@ -322,6 +322,46 @@ void testBendGlide()
     checkNear (r.engine.getBendFactor(), 1.0, 1.0e-9, "bend returns to exactly 1 when settled");
 }
 
+// A mouse drag arrives as a staircase of per-block parameter steps. BEND must turn that
+// into one continuous glide, not a burst of full-rate slew per step separated by unity.
+void testBendDrag()
+{
+    Rig r;
+    r.s.timeMs = 500.0;
+    r.s.timeMode = TimeMode::Bend;
+    r.s.speed = 1.0;
+    r.s.feedback = 0.5f;
+    r.apply();
+    r.run ((int) kSr, [] (int i) { return 0.3f * std::sin (i * 0.05f); });
+
+    // 500 -> 400 ms over one second: a 0.1 s move per 1 s of audio, so the honest doppler
+    // is m = 1.1. Anything near the 4x rate limit is the staircase leaking through.
+    const int chunk = 8;
+    const int perStep = kBlock / chunk;
+    const int steps = (int) (kSr / kBlock);
+    double minM = 10.0, maxM = -10.0;
+
+    for (int k = 1; k <= steps; ++k)
+    {
+        r.s.timeMs = 500.0 - 100.0 * k / steps;
+        r.apply();
+        for (int c = 0; c < perStep; ++c)
+        {
+            r.run (chunk, [] (int i) { return 0.3f * std::sin (i * 0.05f); });
+            minM = juce::jmin (minM, r.engine.getBendFactor());
+            maxM = juce::jmax (maxM, r.engine.getBendFactor());
+        }
+    }
+
+    check (maxM <= 1.15, "a slow drag bends at the drag rate, not the rate limit");
+    check (minM >= 0.99, "and never lurches back the other way");
+    check (r.allFinite(), "finite through the drag");
+
+    r.run ((int) (kSr * 0.5), [] (int i) { return 0.3f * std::sin (i * 0.05f); });
+    checkNear (r.engine.getBendFactor(), 1.0, 1.0e-9, "settles back to unity after the drag");
+    checkNear (r.engine.getEffectiveTimeSamples(), 0.4 * kSr, 1.0, "and lands on the new time");
+}
+
 void testDeadband()
 {
     Rig r;
@@ -441,6 +481,14 @@ void testTapeSpacing()
     fast.run ((int) (kSr * 3), [] (int i) { return i < 100 ? 0.5f : 0.0f; });
     check (fast.allFinite(), "tape runaway stays finite");
     check (! fast.engine.readOverrun(), "tape never chases a source still being written");
+
+    // the runaway bottoms out at the buffer clamp, and the UI must report that period
+    // rather than the time knob, which in TAPE only ever set the first one
+    checkNear (fast.engine.getPeriodSamples(), (double) fast.engine.getMinPeriodSamples(), 0.5,
+               "tape period collapses to the buffer clamp at r = 2");
+    checkNear (fast.engine.getPeriodMs(), fast.engine.getMinPeriodMs(), 1.0e-6,
+               "and the UI period follows the real one, not the 400 ms knob");
+    checkNear (fast.engine.getEffectiveTimeMs(), 400.0, 1.0e-6, "while T_eff still holds the knob");
 }
 
 void testSyncBoundaries()
@@ -828,6 +876,7 @@ int main()
     test ("speed sweep 0.25 -> 4 is smooth and safe", testSpeedSweep);
     test ("REGRID shrink 20 s -> 200 ms", testRegridShrink);
     test ("BEND glide rate limits and settle", testBendGlide);
+    test ("BEND drag glides continuously", testBendDrag);
     test ("time deadband kills the unity tremolo", testDeadband);
     test ("tail = 10 x Dmax and tracks T", testTailTracksTime);
     test ("soft clip shape", testSoftClip);
