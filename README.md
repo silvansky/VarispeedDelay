@@ -37,6 +37,14 @@ CI builds and tests every push on macOS (universal, arm64 + x86_64) and Windows,
 pushing a `v*` tag attaches the zipped VST3 / AU / Standalone builds to a release.
 Prebuilt binaries are on the [releases page](https://github.com/silvansky/VarispeedDelay/releases).
 
+## Tested hosts
+
+| Platform | Host | Format |
+|---|---|---|
+| macOS | Logic Pro | AU |
+| Windows | FL Studio | VST3 |
+| Windows | Ableton Live | VST3 |
+
 ## Docs
 
 | File | What it covers |
@@ -58,8 +66,9 @@ delay engine and EQ can be reused freely. `COPYRIGHT.md` spells this out.
 ## Status
 
 Engine, UI, sync, EQ and preset machinery are implemented; all three formats build
-warning-free and the unit tests pass.
+warning-free and the unit tests pass. The AU passes `auval` and runs in Logic Pro; the
+VST3 runs in FL Studio and Ableton Live on Windows.
 
 Outstanding: factory preset *content* (the mechanism is done, but presets have to be
-dialled in by ear in the standalone), host validation with `auval` / pluginval / a DAW,
-and the by-ear tuning of glide, bend limits, clip threshold and interpolation order.
+dialled in by ear in the standalone), a pluginval run, and the by-ear tuning of glide,
+bend limits, clip threshold and interpolation order.
