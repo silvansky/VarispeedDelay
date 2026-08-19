@@ -70,13 +70,28 @@ Engine invariants worth knowing before changing it:
 
 ## Presets
 
-Authored in the standalone, not in a DAW: run the binary with `VSPD_PRESET_DIR` pointing
-at `presets/`, dial in a sound, hit Save.
+The `PRESET [combo] [Save...]` row appears in **every debug build** (all formats) and in
+the release standalone. Release plugin builds hide it and leave preset management to the
+host; `-DVSPD_PRESET_AUTHORING=ON` opts a release build back in.
+
+Authoring in the standalone:
 
 ```bash
 VSPD_PRESET_DIR=$PWD/presets \
   build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app/Contents/MacOS/VarispeedDelay
 ```
 
-Run the binary directly — `open` does not pass environment variables through. Adding a
-preset file needs a `cmake ..` before it is embedded (CMake globs at configure time).
+Authoring in a DAW — build Debug and point the DAW at `build-debug/.../Debug/VST3`:
+
+```bash
+cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug && cmake --build build-debug -j8
+```
+
+A DAW launched from Finder will not have inherited `VSPD_PRESET_DIR`, so presets land in
+`~/Documents/VarispeedDelay/Presets` unless the DAW itself is started from a shell that
+sets it. The Save dialog prints the destination directory. Copy the files into `presets/`
+to commit them.
+
+Run the standalone binary directly — `open` does not pass environment variables through.
+Adding a preset file needs a `cmake ..` before it is embedded (CMake globs at configure
+time).

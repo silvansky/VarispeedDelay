@@ -157,7 +157,12 @@ VarispeedDelayEditor::VarispeedDelayEditor (VarispeedDelayProcessor& p)
     setLookAndFeel (&lnf);
     buildControls();
 
-#if JucePlugin_Build_Standalone
+    // Debug builds get the authoring row in every format, so presets can be dialled in
+    // from a DAW as well as the standalone. Release plugin builds leave preset management
+    // to the host unless VSPD_PRESET_AUTHORING is set.
+#if JUCE_DEBUG || defined (VSPD_PRESET_AUTHORING)
+    showPresetRow = true;
+#elif JucePlugin_Build_Standalone
     showPresetRow = juce::JUCEApplicationBase::isStandaloneApp();
 #endif
 
@@ -307,8 +312,10 @@ void VarispeedDelayEditor::refreshPresetCombo()
 
 void VarispeedDelayEditor::showSaveDialog()
 {
-    saveWindow = std::make_unique<juce::AlertWindow> ("Save preset", "Preset name:",
-                                                      juce::MessageBoxIconType::NoIcon, this);
+    saveWindow = std::make_unique<juce::AlertWindow> (
+        "Save preset",
+        "Saving to " + PresetManager::presetDir().getFullPathName() + "\n\nPreset name:",
+        juce::MessageBoxIconType::NoIcon, this);
     saveWindow->addTextEditor ("name", "New Preset");
     saveWindow->addButton ("Save", 1);
     saveWindow->addButton ("Cancel", 0);

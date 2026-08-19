@@ -1,4 +1,5 @@
 build/
+build-debug/
 .claude/
 .DS_Store
 *.xcodeproj

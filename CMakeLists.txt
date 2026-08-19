@@ -31,6 +31,12 @@ target_sources(VarispeedDelay PRIVATE
     src/RepetitionView.cpp
 )
 
+# Debug builds always show the preset authoring row; this opts a release build in too.
+option(VSPD_PRESET_AUTHORING "Show the preset authoring row in release plugin builds" OFF)
+if(VSPD_PRESET_AUTHORING)
+    target_compile_definitions(VarispeedDelay PRIVATE VSPD_PRESET_AUTHORING=1)
+endif()
+
 target_compile_definitions(VarispeedDelay PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
