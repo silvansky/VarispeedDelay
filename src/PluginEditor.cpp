@@ -126,9 +126,31 @@ LabeledKnob::LabeledKnob (juce::AudioProcessorValueTreeState& state, const juce:
 void LabeledKnob::resized()
 {
     auto b = getLocalBounds();
-    captionLabel.setBounds (b.removeFromTop (12));
+    auto caption = b.removeFromTop (12);
+    if (hasLed) ledArea = caption.removeFromRight (12).withSizeKeepingCentre (7, 7);
+    captionLabel.setBounds (caption);
     valueLabel.setBounds (b.removeFromBottom (15));
     slider.setBounds (b);
+}
+
+void LabeledKnob::paint (juce::Graphics& g)
+{
+    if (! hasLed) return;
+    g.setColour (juce::Colour (ledOn ? col::accent : col::track));
+    g.fillEllipse (ledArea.toFloat());
+}
+
+void LabeledKnob::showLed()
+{
+    hasLed = true;
+    resized();
+}
+
+void LabeledKnob::setLed (bool on)
+{
+    if (ledOn == on) return;
+    ledOn = on;
+    repaint (ledArea);
 }
 
 void LabeledKnob::setValueOverride (const juce::String& text)
@@ -186,11 +208,16 @@ void VarispeedDelayEditor::buildControls()
         "Tape speed of every repetition - pitch and length change together");
     feedbackKnob = std::make_unique<LabeledKnob> (s, pid::feedback, "FEEDBACK",
         "Recycle gain. Above 1.0 the loop runs away - the soft clip keeps it musical");
+    clipThreshKnob = std::make_unique<LabeledKnob> (s, pid::clipThr, "THRESHOLD",
+        "Soft clip threshold - the recycle path is transparent below it, tanh above it "
+        "up to the 0 dBFS ceiling. The dot lights while the clip is working");
+    clipThreshKnob->showLed();
     dryKnob = std::make_unique<LabeledKnob> (s, pid::dry, "DRY", "Dry signal level");
     wetKnob = std::make_unique<LabeledKnob> (s, pid::wet, "WET",
         "Wet level. Overlapping repeats sum without compensation, so this is the trim");
 
-    for (auto* k : { timeKnob.get(), speedKnob.get(), feedbackKnob.get(), dryKnob.get(), wetKnob.get() })
+    for (auto* k : { timeKnob.get(), speedKnob.get(), feedbackKnob.get(), clipThreshKnob.get(),
+                     dryKnob.get(), wetKnob.get() })
         addAndMakeVisible (*k);
 
     auto* pSync    = s.getParameter (pid::timeSync);
@@ -209,7 +236,7 @@ void VarispeedDelayEditor::buildControls()
     fbTypeSwitch = std::make_unique<ChoiceSwitch> (*pFb, juce::StringArray { "RAW", "STABLE" },
         "RAW: pitch compounds each repetition. STABLE: every repetition plays at the same speed");
     clipSwitch = std::make_unique<ChoiceSwitch> (*pClip, juce::StringArray { "NO CLIP", "CLIP" },
-        "Soft clip in the recycle path - transparent below -6 dBFS, bounds runaway above it");
+        "Soft clip in the recycle path - transparent below the threshold, bounds runaway above it");
     eqOnSwitch = std::make_unique<ChoiceSwitch> (*pEq, juce::StringArray { "OFF", "ON" },
         "7-band EQ on the repetition path - repetition N carries the curve N times");
 
@@ -421,12 +448,7 @@ void VarispeedDelayEditor::resized()
     auto fbCol = ca.reduced (6, 0);
     feedbackKnob->setBounds (fbCol.removeFromLeft (86));
     fbCol.removeFromLeft (8);
-    {
-        auto rows = fbCol.withTrimmedTop (36);
-        fbTypeSwitch->setBounds (rows.removeFromTop (24));
-        rows.removeFromTop (6);
-        clipSwitch->setBounds (rows.removeFromTop (24));
-    }
+    fbTypeSwitch->setBounds (fbCol.withSizeKeepingCentre (fbCol.getWidth(), 24));
 
     // ---- EQ ---------------------------------------------------------------
     auto ea = eqArea.reduced (10, 0).withTrimmedTop (24).withTrimmedBottom (8);
@@ -441,8 +463,12 @@ void VarispeedDelayEditor::resized()
         eqSliders[i]->setBounds (band.reduced (bandW / 4, 0));
     }
 
-    // ---- dry / wet + repetition view --------------------------------------
+    // ---- clip / dry / wet + repetition view -------------------------------
     auto ba = bottomArea.reduced (10, 6);
+    clipSwitch->setBounds (ba.removeFromLeft (92).withSizeKeepingCentre (92, 24));
+    ba.removeFromLeft (8);
+    clipThreshKnob->setBounds (ba.removeFromLeft (78));
+    ba.removeFromLeft (12);
     dryKnob->setBounds (ba.removeFromLeft (78));
     ba.removeFromLeft (4);
     wetKnob->setBounds (ba.removeFromLeft (78));
@@ -481,7 +507,10 @@ void VarispeedDelayEditor::timerCallback()
 
     const bool sync = proc.getAPVTS().getRawParameterValue (pid::timeSync)->load() > 0.5f;
     const bool bend = proc.getAPVTS().getRawParameterValue (pid::timeMode)->load() > 0.5f;
+    const bool clip = proc.getAPVTS().getRawParameterValue (pid::clipOn)->load() > 0.5f;
     divBox.setEnabled (sync);
+    clipThreshKnob->slider.setEnabled (clip);
+    clipThreshKnob->setLed (proc.getEngine().isClipping());
 
     if (sync)
     {

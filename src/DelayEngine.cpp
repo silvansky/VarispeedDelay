@@ -36,14 +36,16 @@ inline double raisedCos (double x) noexcept
 int numDivisions() { return (int) (sizeof (kDivs) / sizeof (kDivs[0])); }
 const Division& division (int i) { return kDivs[juce::jlimit (0, numDivisions() - 1, i)]; }
 
-float softClip (float x, bool on) noexcept
+float softClip (float x, bool on, float threshold) noexcept
 {
     if (on)
     {
+        // a threshold at the ceiling would divide by zero, so pin it just below
+        const float t = juce::jlimit (0.0f, kClipCeiling - 1.0e-3f, threshold);
         const float a = std::abs (x);
-        if (a > kClipThreshold)
+        if (a > t)
         {
-            constexpr float t = kClipThreshold, c = kClipCeiling;
+            constexpr float c = kClipCeiling;
             x = std::copysign (t + (c - t) * std::tanh ((a - t) / (c - t)), x);
         }
     }
@@ -67,6 +69,7 @@ void DelayEngine::prepare (double sampleRate, int maxBlockSize, int nch)
     speedSm.reset (sr, kSpeedGlideMs * 0.001);
     bendGoal.reset (sr, kTimeGlideMs * 0.001);
     fbSm.reset (sr, 0.02);
+    clipSm.reset (sr, 0.02);
     drySm.reset (sr, 0.02);
     wetSm.reset (sr, 0.02);
 
@@ -83,6 +86,7 @@ void DelayEngine::reset()
     n = 0;
     spawnOrder = 0;
     peakVoices = 0;
+    clipHold = 0;
     overrun = false;
 
     tLatched = juce::jlimit ((double) minPeriod, (double) maxLen, settings.timeMs * 0.001 * sr);
@@ -104,6 +108,7 @@ void DelayEngine::reset()
 
     speedSm.setCurrentAndTargetValue (juce::jlimit (kMinSpeed, kMaxSpeed, settings.speed));
     fbSm.setCurrentAndTargetValue (settings.feedback);
+    clipSm.setCurrentAndTargetValue (settings.clipThresh);
     drySm.setCurrentAndTargetValue (settings.dry);
     wetSm.setCurrentAndTargetValue (settings.wet);
 
@@ -386,6 +391,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
     speedSm.setTargetValue (juce::jlimit (kMinSpeed, kMaxSpeed, settings.speed));
     fbSm.setTargetValue (settings.feedback);
+    clipSm.setTargetValue (settings.clipThresh);
     drySm.setTargetValue (settings.dry);
     wetSm.setTargetValue (settings.wet);
 
@@ -447,11 +453,13 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         for (int ch = 0; ch < nch; ++ch) x[ch] = out[ch][i];
 
         const float fb = fbSm.getNextValue();
+        const float clipThresh = clipSm.getNextValue();
         const float dryG = drySm.getNextValue();
         const float wetG = wetSm.getNextValue();
 
         float wetSum[2] { 0.0f, 0.0f };
         int live = 0;
+        bool clipped = false;
 
         for (int vi = 0; vi < kMaxVoices; ++vi)
         {
@@ -526,14 +534,20 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                     wetSum[ch] += audible;
 
                     if (v.writing && v.fbType == FbType::Raw)
-                        gens[v.dst].buf.getWritePointer (ch)[v.w] = softClip (audible * fb, clipOn);
+                    {
+                        const float pre = audible * fb;
+                        clipped = clipped || std::abs (pre) > clipThresh;
+                        gens[v.dst].buf.getWritePointer (ch)[v.w] = softClip (pre, clipOn, clipThresh);
+                    }
                 }
 
                 if (v.writing && v.fbType == FbType::Stable)
                 {
                     const float u = readAt (v.src, v.w, ch);
                     const float rec = eqOn ? eq.process (v.eqRec, u, ch) : u;
-                    gens[v.dst].buf.getWritePointer (ch)[v.w] = softClip (rec * fb, clipOn);
+                    const float pre = rec * fb;
+                    clipped = clipped || std::abs (pre) > clipThresh;
+                    gens[v.dst].buf.getWritePointer (ch)[v.w] = softClip (pre, clipOn, clipThresh);
                 }
             }
 
@@ -562,6 +576,9 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         }
 
         if (live > peakVoices) peakVoices = live;
+
+        if (clipped && clipOn) clipHold = (int) (kClipHoldMs * 0.001 * sr);
+        else if (clipHold > 0) --clipHold;
 
         if (n < maxLen)
         {
@@ -608,6 +625,7 @@ void DelayEngine::publishUi()
         }
     }
     uiVoices.store (count, std::memory_order_relaxed);
+    uiClipping.store (clipHold > 0, std::memory_order_relaxed);
     uiPeriodMs.store (periodLen / sr * 1000.0, std::memory_order_relaxed);
     uiEffTimeMs.store (tEff / sr * 1000.0, std::memory_order_relaxed);
     if (repMs > 0.0) uiRepMs.store (repMs, std::memory_order_relaxed);

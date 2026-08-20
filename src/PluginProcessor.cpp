@@ -74,6 +74,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout VarispeedDelayProcessor::cre
 
     layout.add (std::make_unique<Bool> (juce::ParameterID { pid::clipOn, 1 }, "Soft Clip", true));
 
+    layout.add (std::make_unique<Float> (
+        juce::ParameterID { pid::clipThr, 1 }, "Clip Threshold",
+        juce::NormalisableRange<float> (kClipThreshMinDb, kClipThreshMaxDb, 0.0f, 1.0f),
+        kClipThreshDefDb,
+        Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dB"; })));
+
     layout.add (std::make_unique<Choice> (
         juce::ParameterID { pid::spacing, 1 }, "Spacing",
         juce::StringArray { "Grid", "Tape" }, 0));
@@ -112,6 +118,7 @@ void VarispeedDelayProcessor::cacheParameterPointers()
     pFeedback = apvts.getRawParameterValue (pid::feedback);
     pFbType   = apvts.getRawParameterValue (pid::fbType);
     pClip     = apvts.getRawParameterValue (pid::clipOn);
+    pClipThr  = apvts.getRawParameterValue (pid::clipThr);
     pSpacing  = apvts.getRawParameterValue (pid::spacing);
     pEqOn     = apvts.getRawParameterValue (pid::eqOn);
     pDry      = apvts.getRawParameterValue (pid::dry);
@@ -146,6 +153,7 @@ void VarispeedDelayProcessor::pushSettings()
     s.feedback = pFeedback->load();
     s.fbType   = pFbType->load() > 0.5f ? FbType::Stable : FbType::Raw;
     s.clip     = pClip->load() > 0.5f;
+    s.clipThresh = juce::Decibels::decibelsToGain (pClipThr->load());
     s.spacing  = pSpacing->load() > 0.5f ? Spacing::Tape : Spacing::Grid;
     s.eqOn     = pEqOn->load() > 0.5f;
     s.dry      = pDry->load();

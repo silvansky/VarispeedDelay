@@ -165,8 +165,14 @@ really does diverge, so a **hard safety clamp at ±8 (+18 dB) stays in the path
 unconditionally** — inaudible unless you are already deep into runaway, and it keeps inf
 and NaN out of the host's mix bus.
 
-Threshold and ceiling are constants. Exposing the threshold as a float parameter is a
-one-line addition if it turns out to want tuning per-patch; the switch is enough for now.
+The ceiling is a constant. The threshold is the `clip_thresh` parameter, -36 to -1 dBFS,
+default -6 dB (0.5012, a rounding hair off the 0.5 constant and inaudible). Low settings
+turn the recycle path into tape-style saturation - a 0 dBFS peak leaves at -2.3 dB at
+-36 dB threshold - and high ones keep it transparent until the loop is nearly at the
+ceiling. It is smoothed over 20 ms like feedback, so a preset recall cannot record a step
+into the recycle buffer and click it back a period later. The knob greys out when
+`clip_on` is off, and carries an activity dot - the engine holds a clip hit for
+`kClipHoldMs = 120` so a 30 Hz UI cannot miss one.
 
 Placement is the recycle path only, after the feedback gain — its job is bounding the
 loop, not limiting the output. The wet sum of up to 5 overlapping voices is a separate
@@ -471,6 +477,7 @@ supports two voices sounding at once.
 | `feedback` | Float | 0 – 2 | >1 = runaway |
 | `fb_type` | Choice | Raw / Stable | |
 | `clip_on` | Bool | default on | soft clip in the recycle path |
+| `clip_thresh` | Float | -36 - -1 dBFS, default -6 | where the clip's knee starts; ceiling stays 0 dBFS |
 | `spacing` | Choice | Grid / Tape | when the next repetition starts |
 | `eq_on` | Bool | | |
 | `eq_b1` … `eq_b7` | Float | −12 … +12 dB | 63, 160, 400, 1k, 2.5k, 6.3k, 16k |
@@ -481,7 +488,7 @@ Speed preset buttons (1/4, 1/2, 1, 2, 4) write `speed` via `setValueNotifyingHos
 they are just shortcuts — no extra parameter.
 
 Smoothing (`juce::SmoothedValue`): speed per sample (`kSpeedGlideMs = 20`, see *Speed
-changes*), feedback / dry / wet per block are fine at ~20 ms. `fb_type` latches at period
+changes*), feedback / dry / wet / clip threshold per block are fine at ~20 ms. `fb_type` latches at period
 boundaries; `time` is handled by the `time_mode` path above — REGRID snaps, BEND ramps its
 goal over `kTimeGlideMs = 50` before the rate limit sees it.
 
@@ -580,12 +587,12 @@ pointers, reads the playhead, and pushes values into the engine once per block.
 ├─────────────────────────────────────────────────────────────┤
 │  ( TIME )   [FREE|SYNC] [div ▾]     ( SPEED )   ( FEEDBACK ) │
 │   1.20 s    [REGRID|BEND] [GRID|TAPE] 1.00x      0.65        │
-│                          [¼][½][1][2][4]   [RAW|STABLE][CLIP]│
+│                          [¼][½][1][2][4]      [RAW|STABLE]   │
 ├─────────────────────────────────────────────────────────────┤
 │  EQ [ON]   ▮ ▮ ▮ ▮ ▮ ▮ ▮      (7 vertical sliders, ±12 dB)   │
 │            63 160 400 1k 2k5 6k3 16k                        │
 ├─────────────────────────────────────────────────────────────┤
-│  ( DRY )   ( WET )                                          │
+│  [NO CLIP|CLIP] (THRESHOLD •) ( DRY )   ( WET )             │
 ├─────────────────────────────────────────────────────────────┤
 │ [?] Delay time — free 10 ms…20 s   48000 Hz | 512 smp | ~10.7│
 │                                    ms | v0.1.0 (2026-08-14) │

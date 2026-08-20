@@ -17,7 +17,10 @@ inline constexpr double kMaxDelayMs      = 20000.0;
 inline constexpr double kMinSpeed        = 0.25;
 inline constexpr double kMaxSpeed        = 4.0;
 inline constexpr double kOverlapFactor   = 4.0;
-inline constexpr float  kClipThreshold   = 0.5f;
+inline constexpr float  kClipThreshold   = 0.5f;   // engine default; the knob's -6 dB is 0.5012
+inline constexpr float  kClipThreshMinDb = -36.0f;
+inline constexpr float  kClipThreshMaxDb = -1.0f;
+inline constexpr float  kClipThreshDefDb = -6.0f;
 inline constexpr float  kClipCeiling     = 1.0f;
 inline constexpr float  kSafetyClamp     = 8.0f;
 inline constexpr double kSpeedGlideMs    = 20.0;
@@ -29,6 +32,7 @@ inline constexpr double kXfadeMinMs      = 0.25;
 inline constexpr double kXfadeMaxMs      = 8.0;
 inline constexpr double kTailGenerations = 10.0;
 inline constexpr double kUnityEpsilon    = 1.0e-4;
+inline constexpr double kClipHoldMs      = 120.0;   // so a 30 Hz UI cannot miss a hit
 
 enum class TimeMode { Regrid = 0, Bend };
 enum class Spacing  { Grid = 0, Tape };
@@ -37,7 +41,7 @@ struct Division { const char* name; double quarters; bool isBar; };
 int numDivisions();
 const Division& division (int index);
 
-float softClip (float x, bool on) noexcept;
+float softClip (float x, bool on, float threshold = kClipThreshold) noexcept;
 
 class DelayEngine
 {
@@ -52,6 +56,7 @@ public:
         float    feedback = 0.5f;
         FbType   fbType   = FbType::Raw;
         bool     clip     = true;
+        float    clipThresh = kClipThreshold;   // linear, not dB
         Spacing  spacing  = Spacing::Grid;
         bool     eqOn     = false;
         float    eqDb[kNumEqBands] {};
@@ -87,6 +92,7 @@ public:
     double getEffectiveTimeMs() const noexcept { return uiEffTimeMs.load (std::memory_order_relaxed); }
     double getRepetitionMs() const noexcept { return uiRepMs.load (std::memory_order_relaxed); }
     int    getActiveVoices() const noexcept { return uiVoices.load (std::memory_order_relaxed); }
+    bool   isClipping()      const noexcept { return uiClipping.load (std::memory_order_relaxed); }
     int    getVoiceSnapshot (VoiceInfo* dest, int maxCount) const;
 
     /** Shortest period the engine will run — the host's buffer size. */
@@ -99,6 +105,7 @@ public:
     double getEffectiveTimeSamples() const noexcept { return tEff; }
     int    getPeriodSamples() const noexcept { return periodLen; }
     double getBendFactor() const noexcept { return lastBend; }
+    float  getClipThreshold() const noexcept { return clipSm.getCurrentValue(); }
     bool   readOverrun() const noexcept { return overrun; }
     int    maxConcurrentVoices() const noexcept { return peakVoices; }
 
@@ -157,18 +164,21 @@ private:
     double divPpq = 1.0, lastDivPpq = 1.0;
     double ppqPerSample = 0.0, ppqBlockStart = 0.0, expectedPpq = 0.0, nextBoundaryPpq = 0.0;
 
+    int    clipHold = 0;
     bool   overrun = false;
     int    peakVoices = 0;
 
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Multiplicative> speedSm { 1.0 };
     juce::SmoothedValue<double> bendGoal { 0.0 };
     juce::SmoothedValue<float>  fbSm { 0.5f }, drySm { 1.0f }, wetSm { 0.5f };
+    juce::SmoothedValue<float>  clipSm { kClipThreshold };
 
     std::atomic<double> tailSeconds { 1.0 };
     std::atomic<double> uiPeriodMs { 500.0 };
     std::atomic<double> uiEffTimeMs { 500.0 };
     std::atomic<double> uiRepMs { 500.0 };
     std::atomic<int>    uiVoices { 0 };
+    std::atomic<bool>   uiClipping { false };
     std::atomic<float>  uiVoiceElapsed[kMaxVoices] {};
     std::atomic<float>  uiVoiceDuration[kMaxVoices] {};
     std::atomic<float>  uiVoiceEnv[kMaxVoices] {};

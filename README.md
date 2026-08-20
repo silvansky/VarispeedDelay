@@ -17,7 +17,7 @@ a different tape speed — pitch and duration change together.
 - spacing switch: keep repetitions on the grid, or let them run away like a tape loop
 - PPQ-anchored sync, so a bounce matches what was auditioned from any start point
 - short crossfades at repetition edges and at the input/recycle join for click protection
-- soft clip in the recycle path, transparent below −6 dBFS
+- soft clip in the recycle path with an adjustable threshold, −36 to −1 dBFS
 
 ## Build
 

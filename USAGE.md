@@ -18,6 +18,7 @@ instead of being cut short.
 | **FEEDBACK** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. |
 | **RAW / STABLE** | Whether the varispeed compounds each generation — see below. |
 | **CLIP** | Soft clip in the recycle path. On by default. |
+| **THRESHOLD** | Where that clip starts, -36 to -1 dBFS. The recycle path is untouched below it and tanh-shaped above it, up to a fixed 0 dBFS ceiling. Low settings saturate a runaway tail like tape, high ones stay clean until the loop is nearly at the ceiling. Greyed out when CLIP is off. The dot beside the caption lights while the clip is actually working. |
 | **EQ + 7 bands** | ±12 dB at 63, 160, 400, 1k, 2.5k, 6.3k, 16k, applied once per repetition. |
 | **DRY / WET** | Output mix. WET is the trim for overlapping repetitions. |
 

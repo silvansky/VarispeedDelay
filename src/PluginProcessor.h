@@ -15,6 +15,7 @@ inline constexpr const char* speed    = "speed";
 inline constexpr const char* feedback = "feedback";
 inline constexpr const char* fbType   = "fb_type";
 inline constexpr const char* clipOn   = "clip_on";
+inline constexpr const char* clipThr  = "clip_thresh";
 inline constexpr const char* spacing  = "spacing";
 inline constexpr const char* eqOn     = "eq_on";
 inline constexpr const char* dry      = "dry";
@@ -75,6 +76,7 @@ private:
     std::atomic<float>* pFeedback = nullptr;
     std::atomic<float>* pFbType = nullptr;
     std::atomic<float>* pClip = nullptr;
+    std::atomic<float>* pClipThr = nullptr;
     std::atomic<float>* pSpacing = nullptr;
     std::atomic<float>* pEqOn = nullptr;
     std::atomic<float>* pEqBand[vspd::kNumEqBands] {};

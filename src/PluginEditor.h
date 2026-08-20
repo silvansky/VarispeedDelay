@@ -26,9 +26,14 @@ public:
     LabeledKnob (juce::AudioProcessorValueTreeState&, const juce::String& paramId,
                  const juce::String& caption, juce::String helpText);
 
+    void paint (juce::Graphics&) override;
     void resized() override;
     void refreshValue();
     void setValueOverride (const juce::String& text);   // empty clears
+
+    /** Adds an activity dot to the caption row - dim when idle, accent when lit. */
+    void showLed();
+    void setLed (bool on);
 
     juce::Slider slider;
 
@@ -36,6 +41,8 @@ private:
     juce::RangedAudioParameter* param = nullptr;
     juce::Label captionLabel, valueLabel;
     juce::String override;
+    juce::Rectangle<int> ledArea;
+    bool hasLed = false, ledOn = false;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
@@ -67,7 +74,8 @@ private:
     VarispeedDelayProcessor& proc;
     VarispeedLookAndFeel lnf;
 
-    std::unique_ptr<LabeledKnob> timeKnob, speedKnob, feedbackKnob, dryKnob, wetKnob;
+    std::unique_ptr<LabeledKnob> timeKnob, speedKnob, feedbackKnob, clipThreshKnob,
+                                 dryKnob, wetKnob;
     std::unique_ptr<ChoiceSwitch> syncSwitch, timeModeSwitch, spacingSwitch, fbTypeSwitch,
                                   clipSwitch, eqOnSwitch;
     juce::ComboBox divBox;

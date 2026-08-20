@@ -427,11 +427,94 @@ void testSoftClip()
     check (softClip (1.0e30f, false) <= kSafetyClamp, "safety clamp holds with clip off");
     check (std::isfinite (softClip (1.0e30f, false)), "no inf reaches the bus");
 
-    // slope is continuous at the threshold (no kink -> no harmonics)
-    const float d = 1.0e-4f;
-    const float slopeBelow = (softClip (kClipThreshold - d, true) - softClip (kClipThreshold - 2 * d, true)) / d;
-    const float slopeAbove = (softClip (kClipThreshold + 2 * d, true) - softClip (kClipThreshold + d, true)) / d;
-    checkNear (slopeBelow, slopeAbove, 0.01, "derivative continuous at the threshold");
+    // the shape has to hold at every threshold the knob can reach, not just the default
+    for (float t : { 0.0158f, 0.1f, kClipThreshold, 0.891f })
+    {
+        for (float x = -t; x <= t; x += t * 0.05f)
+            checkNear (softClip (x, true, t), x, 1.0e-6, "transparent below the threshold");
+
+        float p = softClip (-8.0f, true, t);
+        for (float x = -8.0f; x <= 8.0f; x += 0.002f)
+        {
+            const float y = softClip (x, true, t);
+            check (y >= p - 1.0e-6f, "monotonic at any threshold");
+            p = y;
+        }
+
+        check (softClip (1.0e6f, true, t) <= kClipCeiling + 1.0e-4f, "asymptotes to the ceiling");
+
+        const float d = 1.0e-4f;
+        const float below = (softClip (t - d, true, t) - softClip (t - 2 * d, true, t)) / d;
+        const float above = (softClip (t + 2 * d, true, t) - softClip (t + d, true, t)) / d;
+        checkNear (below, above, 0.02, "derivative continuous at the threshold");
+    }
+
+    // a threshold at or past the ceiling would divide by zero
+    check (std::isfinite (softClip (2.0f, true, kClipCeiling)), "threshold at the ceiling is finite");
+    check (std::isfinite (softClip (2.0f, true, 4.0f)), "threshold past the ceiling is finite");
+}
+
+void testClipThreshold()
+{
+    // a hot runaway: the lower the threshold, the harder the recycle path is held down
+    auto peakAt = [] (float thresh, bool clip)
+    {
+        Rig r;
+        r.s.feedback = 1.6f;
+        r.s.timeMs = 60.0;
+        r.s.clip = clip;
+        r.s.clipThresh = thresh;
+        r.s.dry = 0.0f;
+        r.s.wet = 1.0f;
+        r.apply();
+        r.run ((int) (kSr * 2), [] (int i) { return i < 2000 ? 0.9f * std::sin (i * 0.05f) : 0.0f; });
+        return r.peak (0, r.written);
+    };
+
+    const float hi = peakAt (0.891f, true);
+    const float mid = peakAt (kClipThreshold, true);
+    const float lo = peakAt (0.0158f, true);
+    check (lo < mid && mid < hi, "a lower threshold holds the runaway down harder");
+    check (hi < kSafetyClamp, "and every setting stays under the safety clamp");
+
+    // with the clipper off the knob must do nothing at all
+    checkNear (peakAt (0.891f, false), peakAt (0.0158f, false), 1.0e-9,
+               "threshold is inert when CLIP is off");
+
+    // a preset recall drops the threshold in one block; the 20 ms glide keeps that out of
+    // the recycle write, where a step would be recorded and clicked back a period later
+    Rig r;
+    r.s.clip = true;
+    r.s.clipThresh = 0.891f;
+    r.apply();
+    r.runSilence (kBlock * 2);            // past the 20 ms glide
+    checkNear (r.engine.getClipThreshold(), 0.891, 1.0e-6, "settles on the set threshold");
+
+    r.s.clipThresh = 0.0158f;
+    r.apply();
+    r.runSilence (64);                    // 1.3 ms into a 20 ms glide
+    const double moved = r.engine.getClipThreshold();
+    check (moved < 0.891 && moved > 0.7, "a jump glides instead of snapping");
+
+    r.runSilence ((int) (kSr * 0.05));
+    checkNear (r.engine.getClipThreshold(), 0.0158, 1.0e-4, "and arrives inside the glide");
+
+    // the UI dot: lit only while the clip is actually working
+    auto clipping = [] (bool clip, float thresh, float amp)
+    {
+        Rig g;
+        g.s.clip = clip;
+        g.s.clipThresh = thresh;
+        g.s.feedback = 0.9f;
+        g.s.timeMs = 60.0;
+        g.apply();
+        g.run ((int) (kSr * 0.5), [amp] (int i) { return amp * std::sin (i * 0.05f); });
+        return g.engine.isClipping();
+    };
+
+    check (clipping (true, 0.0158f, 0.9f), "dot lights when a hot tail hits the threshold");
+    check (! clipping (true, 0.891f, 0.05f), "stays dark when nothing reaches it");
+    check (! clipping (false, 0.0158f, 0.9f), "and stays dark with CLIP off");
 }
 
 void testRunawayBounded()
@@ -880,6 +963,7 @@ int main()
     test ("time deadband kills the unity tremolo", testDeadband);
     test ("tail = 10 x Dmax and tracks T", testTailTracksTime);
     test ("soft clip shape", testSoftClip);
+    test ("clip threshold", testClipThreshold);
     test ("fb = 2 saturates instead of exploding", testRunawayBounded);
     test ("TAPE spacing", testTapeSpacing);
     test ("sync boundaries at fractional bpm", testSyncBoundaries);
