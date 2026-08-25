@@ -25,10 +25,9 @@ src/DelayEngine.{h,cpp}    generation ring, voice pool, periods, fades, bend, sy
 src/Voice.h                per-voice state
 src/GraphicEQ.{h,cpp}      7 x stereo RBJ peaking biquad, POD coefficients
 src/Presets.{h,cpp}        embedded + user presets, reset-then-overlay apply
-src/LookAndFeel.{h,cpp}    dark flat styling
-src/RepetitionView.{h,cpp} live repetition bars
+src/LookAndFeel.{h,cpp}    tapedeck palette, knobs, switches, fonts
 src/PluginProcessor.*      APVTS layout, raw pointers, playhead, programs
-src/PluginEditor.*         layout, switches, footer with hover help
+src/PluginEditor.*         fixed 800x500 content the editor scales, hover help footer
 tests/EngineTests.cpp      DelayEngine only, no AudioProcessor dependency
 tests/PresetTests.cpp      preset staleness + parameter round trips
 ```

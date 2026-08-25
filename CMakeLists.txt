@@ -28,7 +28,6 @@ target_sources(VarispeedDelay PRIVATE
     src/PluginEditor.cpp
     src/LookAndFeel.cpp
     src/Presets.cpp
-    src/RepetitionView.cpp
 )
 
 # Debug builds always show the preset authoring row; this opts a release build in too.

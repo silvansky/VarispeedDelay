@@ -8,21 +8,25 @@ instead of being cut short.
 
 | Control | What it does |
 |---|---|
-| **TIME** | The period between repetitions, 0.1 ms – 20 s, floored at the audio buffer size. In SYNC it follows the division instead. |
-| **FREE / SYNC** | SYNC locks the period to the host's ppq grid, so repetitions land where notes begin. |
-| **division** | 1/32 up to 2 bars, straight, dotted and triplet. |
+| **Delay Time** | The period between repetitions, 0.1 ms – 20 s, floored at the audio buffer size. In sync it follows the note division instead and the readout greys out. The ring around the knob marks where each division falls at the current tempo. |
+| **note chip** | Locks the period to the host's ppq grid, so repetitions land where notes begin. |
+| **TAP** | Taps a tempo. Free running it writes the delay time; in sync it sets the tempo used when the host has none. |
+| **Note** | 1/32 up to 2 bars, straight, dotted and triplet. |
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
 | **GRID / TAPE** | When the next repetition starts — see below. |
 | **SPEED** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. |
 | **speed grid** | 3x3 shortcuts: octaves at 1/4, 1/2, 1, 2, 4 and fourths/fifths in between. They write the speed parameter, so they glide rather than jump. |
-| **FEEDBACK** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. |
+| **FEEDBACK** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. The readout under the knob is the loop gain: feedback times the largest EQ boost, since that boost compounds too. The arc turns red past the point where the loop stops decaying. |
 | **RAW / STABLE** | Whether the varispeed compounds each generation — see below. |
 | **CLIP** | Soft clip in the recycle path. On by default. |
 | **THRESHOLD** | Where that clip starts, -36 to -1 dBFS. The recycle path is untouched below it and tanh-shaped above it, up to a fixed 0 dBFS ceiling. Low settings saturate a runaway tail like tape, high ones stay clean until the loop is nearly at the ceiling. Greyed out when CLIP is off. The dot beside the caption lights while the clip is actually working. |
 | **EQ + 7 bands** | ±12 dB at 63, 160, 400, 1k, 2.5k, 6.3k, 16k, applied once per repetition. |
 | **DRY / WET** | Output mix. WET is the trim for overlapping repetitions. |
 
-Hover any control for a one-line description in the footer.
+Hover any control for a one-line description in the footer. Click any value to type it -
+the speed field also accepts semitones, written `+7s` or `-1.5s`. Hold shift while dragging
+for fine control, double-click to return a control to its default. The footer's zoom box
+and the bottom-right corner both resize the window.
 
 ## The two feedback types
 

@@ -178,7 +178,7 @@ void VarispeedDelayProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             t.valid   = true;
             t.playing = pos->getIsPlaying();
-            t.bpm     = pos->getBpm().orFallback (fallbackBpm);
+            t.bpm     = pos->getBpm().orFallback (fallbackBpm.load());
             t.ppq     = pos->getPpqPosition().orFallback (0.0);
             if (auto sig = pos->getTimeSignature())
             {
@@ -188,7 +188,7 @@ void VarispeedDelayProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             if (! pos->getPpqPosition().hasValue()) t.playing = false;
         }
     }
-    engine.setFallbackBpm (fallbackBpm);
+    engine.setFallbackBpm (fallbackBpm.load());
     engine.setTransport (t);
     engine.process (buffer);
 }
