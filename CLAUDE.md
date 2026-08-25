@@ -56,13 +56,39 @@ Engine invariants worth knowing before changing it:
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long
   as its source, so it outlives the audible tap at speeds above 1.
 
+## UI
+
+`STYLE.md` is the visual system - canvas, palette, type scale, knob and chip anatomy,
+interaction rules. Read it before changing anything that is drawn. The design sheet it was
+derived from is in git at `2b9c6e2` (`design/05-tapedeck.svg`).
+
+The invariants behind it:
+
+- `EditorContent` lays out at a fixed 800x500 and `VarispeedDelayEditor` scales it with a
+  single `AffineTransform`, so every number in `resized()` and `paint()` is a coordinate
+  off the design sheet. The footer zoom box and the corner resizer only resize the editor.
+- Fonts go through `uiFont`/`monoFont`, which use `withPointHeight`, so a size in the code
+  is the size on the sheet - `withHeight` would come out about 15 % small.
+- Knob extras ride on component properties the look-and-feel reads: `"split"` is where the
+  feedback arc turns red, `"alert"` turns a whole value arc red. Colours stay in
+  `LookAndFeel.cpp`; the editor only publishes state.
+- `paint()` reads a snapshot the 30 Hz timer refreshes, and the timer calls `repaint()`
+  only when that snapshot changes, so an idle UI is not repainting thirty times a second.
+- The time knob has no `SliderAttachment`. It rides the millisecond scale in both modes and
+  writes `time_div` in sync through `snapValue`, never `setValue` mid-drag, and both of its
+  parameter attachments ignore incoming values while the knob is held. That is what stops a
+  drag fighting the float round trip through the parameter.
+- `ValueField`'s label text is what seeds its editor, so it carries the unit. A field whose
+  unit the parameter's `getValueForText` cannot parse needs its own `onEdit` - that is why
+  delay time and speed have one.
+
 ## Conventions
 
 - Zero warnings. Verify with a Release build before committing.
 - No allocation, locks or I/O on the audio thread.
 - Self-documenting code, no comments unless critical. Minimal diffs.
 - Commits: imperative, short, no period.
-- JUCE Font API: `juce::FontOptions(size)`, not the deprecated float constructor.
+- JUCE Font API: `juce::FontOptions`, not the deprecated float constructor.
 - **ASCII only in string literals.** `juce::String (const char*)` decodes as Latin-1, not
   UTF-8, so an em-dash or arrow in a UI string arrives as mojibake. Write `-`, not `—`.
   Comments are unaffected.

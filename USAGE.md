@@ -14,19 +14,25 @@ instead of being cut short.
 | **Note** | 1/32 up to 2 bars, straight, dotted and triplet. |
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
 | **GRID / TAPE** | When the next repetition starts — see below. |
-| **SPEED** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. |
+| **Speed** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. The line under the knob is the same figure in semitones. |
 | **speed grid** | 3x3 shortcuts: octaves at 1/4, 1/2, 1, 2, 4 and fourths/fifths in between. They write the speed parameter, so they glide rather than jump. |
-| **FEEDBACK** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. The readout under the knob is the loop gain: feedback times the largest EQ boost, since that boost compounds too. The arc turns red past the point where the loop stops decaying. |
+| **Feedback** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. The readout under the knob is the loop gain: feedback times the largest EQ boost, since that boost compounds too. The arc turns red past the point where the loop stops decaying. |
 | **RAW / STABLE** | Whether the varispeed compounds each generation — see below. |
-| **CLIP** | Soft clip in the recycle path. On by default. |
-| **THRESHOLD** | Where that clip starts, -36 to -1 dBFS. The recycle path is untouched below it and tanh-shaped above it, up to a fixed 0 dBFS ceiling. Low settings saturate a runaway tail like tape, high ones stay clean until the loop is nearly at the ceiling. Greyed out when CLIP is off. The dot beside the caption lights while the clip is actually working. |
-| **EQ + 7 bands** | ±12 dB at 63, 160, 400, 1k, 2.5k, 6.3k, 16k, applied once per repetition. |
-| **DRY / WET** | Output mix. WET is the trim for overlapping repetitions. |
+| **NO CLIP / CLIP** | Soft clip in the recycle path. On by default. |
+| **Clip Threshold** | Where that clip starts, -36 to -1 dBFS. The recycle path is untouched below it and tanh-shaped above it, up to a fixed 0 dBFS ceiling. Low settings saturate a runaway tail like tape, high ones stay clean until the loop is nearly at the ceiling. Greyed out when the clip is off. The knob's arc turns red while the clip is actually working. |
+| **GRAPHIC EQ, OFF / ON** | ±12 dB at 63, 160, 400, 1k, 2.5k, 6.3k, 16k, applied once per repetition. The sliders stay live while the EQ is off, so a curve can be dialled in before switching it in. |
+| **Dry / Wet** | Output mix. Wet is the trim for overlapping repetitions. |
 
-Hover any control for a one-line description in the footer. Click any value to type it -
-the speed field also accepts semitones, written `+7s` or `-1.5s`. Hold shift while dragging
-for fine control, double-click to return a control to its default. The footer's zoom box
-and the bottom-right corner both resize the window.
+Hover any control for a one-line description in the footer.
+
+Click any value to type it. The delay time takes milliseconds, or seconds with an `s`
+suffix; the speed takes a ratio like `1.5` or semitones written `+7s` / `-1.5s`. Hold
+shift while dragging for fine control, double-click to return a control to its default.
+The footer's zoom box and the bottom-right corner both resize the window.
+
+Two readouts are worth telling apart. **Delay Time**, above the knob, is the target you
+dialled. **period**, under the knob, is what the engine is actually running — the buffer
+floor, the BEND glide and the TAPE grid all show up there, and only there.
 
 ## The two feedback types
 
@@ -77,12 +83,12 @@ and the bottom-right corner both resize the window.
   engine floors the period at the host's buffer size, because below that a single
   `processBlock` would open several generations at once. So the real minimum follows your
   buffer setting: 16 samples at 48 kHz gives 0.33 ms, 2048 at 44.1 kHz gives 46 ms. When
-  the floor binds, the TIME readout shows the real period rather than the knob's value.
-  Periods this short are a flutter/comb effect rather than a delay — which is a legitimate
-  use, just not a rhythmic one.
+  the floor binds, the Delay Time readout still shows what you asked for and the `period`
+  line under the knob shows what you get. Periods this short are a flutter/comb effect
+  rather than a delay — which is a legitimate use, just not a rhythmic one.
 - **Overlap gain.** Four overlapping repeats at feedback 1 sum to roughly +12 dB. There is
   no automatic compensation, because a `1/sqrt(voices)` scaling would pump as voices come
-  and go. The soft clip bounds the loop and the WET knob is the trim.
+  and go. The soft clip bounds the loop and the Wet knob is the trim.
 - **Generational HF loss at fractional speeds only.** The varispeed read interpolates, and
   each repetition resamples the previous one, so the tail darkens. But at 1×, 2× and 4×
   every read position is an integer and nothing is interpolated — those settings stay
@@ -103,6 +109,7 @@ and the bottom-right corner both resize the window.
 ## Presets
 
 In the plugin builds the host's own preset menu shows the factory programs. The standalone
-adds a `PRESET [combo] [Save…]` row: dial in a sound, hit Save, and the preset is written
+adds a preset combo and a `SAVE` button in the title row: dial in a sound, hit SAVE, and
+the preset is written
 to `$VSPD_PRESET_DIR` (or `~/Documents/VarispeedDelay/Presets`). Applying a preset resets
 every parameter to its default first, so nothing bleeds through from the previous one.

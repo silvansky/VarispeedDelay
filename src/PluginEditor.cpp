@@ -240,9 +240,12 @@ ValueField::ValueField (juce::RangedAudioParameter& p, float numberPt, float uni
 
 void ValueField::setDisplay (const juce::String& number, const juce::String& unit)
 {
-    if (isBeingEdited() || (getText() == number && unitText == unit)) return;
+    if (isBeingEdited() || (numberText == number && unitText == unit)) return;
+    numberText = number;
     unitText = unit;
-    setText (number, juce::dontSendNotification);
+    // the label's own text seeds the editor, so it carries the unit - typing into a field
+    // reading "20.00 s" has to mean seconds, not twenty milliseconds
+    setText (unit.isEmpty() ? number : number + " " + unit, juce::dontSendNotification);
     repaint();
 }
 
@@ -268,7 +271,7 @@ void ValueField::paint (juce::Graphics& g)
 
     const auto nf = mono ? monoFont (numPt) : uiFont (numPt);
     const auto uf = mono ? monoFont (uPt)   : uiFont (uPt);
-    const auto number = getText();
+    const auto number = numberText;
     const auto unit = unitText.isEmpty() ? juce::String() : " " + unitText;
     const float nw = juce::GlyphArrangement::getStringWidth (nf, number);
     const float uw = unit.isEmpty() ? 0.0f : juce::GlyphArrangement::getStringWidth (uf, unit);
@@ -331,7 +334,7 @@ void EditorContent::buildControls()
     feedbackKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     clipKnob = std::make_unique<ParamSlider> (s, pid::clipThr,
         "Soft clip threshold - the recycle path is transparent below it, tanh above it "
-        "up to the 0 dBFS ceiling. The dot lights while the clip is working");
+        "up to the 0 dBFS ceiling. The arc turns red while the clip is working");
     clipKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
 
     drySlider = std::make_unique<ParamSlider> (s, pid::dry, "Dry signal level");
@@ -349,7 +352,8 @@ void EditorContent::buildControls()
         return std::make_unique<ValueField> (*s.getParameter (id), numPt, unitPt, help);
     };
 
-    timeField     = field (pid::timeMs,   15.0f, 8.5f, "Delay time - click to type a value");
+    timeField     = field (pid::timeMs,   15.0f, 8.5f,
+        "Delay time - click to type a value, in ms or with an s suffix for seconds");
     speedField    = field (pid::speed,    15.0f, 8.5f,
         "Tape speed - type a ratio like 1.5, or semitones like +7s");
     feedbackField = field (pid::feedback, 15.0f, 8.5f, "Recycle gain - click to type a value");
@@ -357,6 +361,7 @@ void EditorContent::buildControls()
     dryField      = field (pid::dry,      14.0f, 8.5f, "Dry signal level");
     wetField      = field (pid::wet,      14.0f, 8.5f, "Wet signal level");
 
+    timeField->onEdit  = [this] (const juce::String& t) { setTimeFromText (t); };
     speedField->onEdit = [this] (const juce::String& t) { setSpeedFromText (t); };
     // the syntax hint is only useful while the field is open, so it comes and goes with it
     speedField->onEditorShow = [this] { repaint(); };
@@ -447,6 +452,7 @@ void EditorContent::buildControls()
     setHelp (helpMark, "Hover any control for a one-line description here in the footer");
     addAndMakeVisible (helpMark);
 
+    contextHelpLabel.setBorderSize ({});
     contextHelpLabel.setFont (monoFont (8.0f));
     contextHelpLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
     contextHelpLabel.setJustificationType (juce::Justification::centred);
@@ -455,6 +461,7 @@ void EditorContent::buildControls()
     contextHelpLabel.setText (kDefaultHint, juce::dontSendNotification);
     addAndMakeVisible (contextHelpLabel);
 
+    footerLabel.setBorderSize ({});   // the default 5 px inset would clip the build date
     footerLabel.setFont (monoFont (8.0f));
     footerLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
     footerLabel.setJustificationType (juce::Justification::centredLeft);
@@ -627,6 +634,21 @@ void EditorContent::tapTempo()
         }
 }
 
+void EditorContent::setTimeFromText (const juce::String& t)
+{
+    auto* p = proc.getAPVTS().getParameter (pid::timeMs);
+    if (p == nullptr) return;
+
+    const auto text = t.trim().toLowerCase();
+    double ms = text.getDoubleValue();
+    if (text.endsWithChar ('s') && ! text.endsWith ("ms")) ms *= 1000.0;
+
+    const auto& range = p->getNormalisableRange();
+    p->beginChangeGesture();
+    p->setValueNotifyingHost (range.convertTo0to1 (juce::jlimit (range.start, range.end, (float) ms)));
+    p->endChangeGesture();
+}
+
 void EditorContent::setSpeedFromText (const juce::String& t)
 {
     auto* p = proc.getAPVTS().getParameter (pid::speed);
@@ -655,21 +677,21 @@ void EditorContent::resized()
     tapButton.setBounds (64, 98, 38, 22);
     timeField->setBounds (126, 96, 80, 20);
     divBox.setBounds (216, 98, 58, 20);
-    timeKnob->setBounds (116, 146, 72, 72);
+    timeKnob->setBounds (112, 142, 80, 80);
     spacingSwitch->setBounds (24, 242, 83, 16);
     timeModeSwitch->setBounds (156, 242, 105, 16);
 
     // ---- SPEED ------------------------------------------------------------
     speedField->setBounds (356, 96, 130, 26);
-    speedKnob->setBounds (305, 147, 86, 86);
+    speedKnob->setBounds (301, 143, 94, 94);
     for (int i = 0; i < speedPresets.size(); ++i)
         speedPresets[i]->setBounds (400 + (i % kSpeedGridCols) * 52,
                                     156 + (i / kSpeedGridCols) * 24, 48, 20);
 
     // ---- FEEDBACK ---------------------------------------------------------
     feedbackField->setBounds (638, 96, 80, 20);
-    feedbackKnob->setBounds (635, 133, 86, 86);
-    fbTypeSwitch->setBounds (618, 244, 115, 16);
+    feedbackKnob->setBounds (631, 129, 94, 94);
+    fbTypeSwitch->setBounds (620, 244, 116, 16);   // centred on the knob at 678
 
     // ---- GRAPHIC EQ -------------------------------------------------------
     eqOnSwitch->setBounds (300, 276, 79, 16);
@@ -682,8 +704,8 @@ void EditorContent::resized()
 
     // ---- OUTPUT -----------------------------------------------------------
     clipField->setBounds (422, 320, 80, 20);
-    clipKnob->setBounds (424, 342, 76, 76);
-    clipSwitch->setBounds (424, 424, 99, 16);
+    clipKnob->setBounds (420, 338, 84, 84);
+    clipSwitch->setBounds (412, 424, 100, 16);   // centred on the knob at 462
     dryField->setBounds (610, 320, 60, 20);
     drySlider->setBounds (630, 348, 20, 76);
     wetField->setBounds (686, 320, 60, 20);
@@ -774,8 +796,6 @@ void EditorContent::paint (juce::Graphics& g)
     drawCaption (g, "Clip Threshold", 462.0f, 314.0f);
     drawCaption (g, "Dry", 640.0f, 314.0f);
     drawCaption (g, "Wet", 716.0f, 314.0f);
-    g.setColour (juce::Colour (clipLit ? col::accent : col::track));
-    g.fillEllipse (500.5f, 312.5f, 7.0f, 7.0f);
 }
 
 void EditorContent::drawDivisionRing (juce::Graphics& g) const
@@ -876,6 +896,7 @@ void EditorContent::updateReadouts()
     if (syncOn && ! draggingTime)   setTimeKnobValue (divisionMs (divIndex));
     else if (wasSync && ! syncOn)   setTimeKnobValue (s.getRawParameterValue (pid::timeMs)->load());
     clipKnob->setEnabled (clipOn);
+    clipKnob->getProperties().set ("alert", clipLit);
     clipField->setActive (clipOn);
 
     // the target, so the readout tracks the knob instantly - what the engine is actually

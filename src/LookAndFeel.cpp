@@ -19,7 +19,7 @@ juce::Font monoFont (float pt)
 
 float knobArcRadius (juce::Rectangle<int> bounds)
 {
-    const auto b = bounds.toFloat().reduced (3.0f);
+    const auto b = bounds.toFloat().reduced (kKnobInset);
     return juce::jmin (b.getWidth(), b.getHeight()) * 0.5f - kKnobArcThickness * 0.5f;
 }
 
@@ -108,7 +108,7 @@ void VarispeedLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
                                              float sliderPos, float startAngle, float endAngle,
                                              juce::Slider& s)
 {
-    const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (3.0f);
+    const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (kKnobInset);
     const auto centre = bounds.getCentre();
     const float arcR = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f
                        - kKnobArcThickness * 0.5f;
@@ -120,6 +120,8 @@ void VarispeedLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
     const auto& props = s.getProperties();
     const float split = props.contains ("split") ? juce::jlimit (0.0f, 1.0f, (float) props["split"])
                                                  : 1.0f;
+    // "alert" turns the whole value arc red - the clip knob uses it while the clip works
+    const auto valueColour = juce::Colour (props["alert"] ? col::warn : col::accent);
 
     g.setColour (juce::Colour (col::track));
     strokeArc (g, centre, arcR, startAngle, endAngle, kKnobArcThickness);
@@ -130,11 +132,11 @@ void VarispeedLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
         strokeArc (g, centre, arcR + 4.5f, startAngle + split * sweep, endAngle, 2.0f);
     }
 
-    const float green = juce::jmin (sliderPos, split);
-    if (green > 0.001f)
+    const float upToSplit = juce::jmin (sliderPos, split);
+    if (upToSplit > 0.001f)
     {
-        g.setColour (juce::Colour (col::accent));
-        strokeArc (g, centre, arcR, startAngle, startAngle + green * sweep, kKnobArcThickness);
+        g.setColour (valueColour);
+        strokeArc (g, centre, arcR, startAngle, startAngle + upToSplit * sweep, kKnobArcThickness);
     }
     if (sliderPos > split)
     {
@@ -156,8 +158,8 @@ void VarispeedLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
     if (! s.isEnabled())
     {
         g.setColour (juce::Colour (col::background).withAlpha (0.55f));
-        g.fillEllipse (centre.x - arcR - 3.0f, centre.y - arcR - 3.0f,
-                       (arcR + 3.0f) * 2.0f, (arcR + 3.0f) * 2.0f);
+        g.fillEllipse (centre.x - arcR - 6.0f, centre.y - arcR - 6.0f,
+                       (arcR + 6.0f) * 2.0f, (arcR + 6.0f) * 2.0f);
     }
 }
 

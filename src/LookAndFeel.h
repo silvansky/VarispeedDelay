@@ -27,6 +27,8 @@ inline constexpr juce::uint32 pointer    = 0xffe2ecf3;
 inline constexpr float kRotaryStart = juce::MathConstants<float>::pi * 1.25f;
 inline constexpr float kRotaryEnd   = juce::MathConstants<float>::pi * 2.75f;
 inline constexpr float kKnobArcThickness = 3.5f;
+/** Margin the knob keeps outside its value arc, so the feedback overshoot ring fits. */
+inline constexpr float kKnobInset = 7.0f;
 
 /** Point height, not JUCE height, so the sizes match the design sheet one to one. */
 juce::Font uiFont (float pt, bool bold = false);

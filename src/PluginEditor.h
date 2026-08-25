@@ -76,7 +76,7 @@ public:
 
 private:
     juce::RangedAudioParameter& param;
-    juce::String unitText;
+    juce::String numberText, unitText;
     juce::Colour numberColour { vspd::col::text };
     float numPt, uPt;
     bool mono = false;
@@ -110,6 +110,7 @@ private:
     void refreshPresetCombo();
     void tapTempo();
     void setSpeedFromText (const juce::String&);
+    void setTimeFromText (const juce::String&);
     void wireTimeKnob();
     void pushTimeFromKnob();
     void setTimeKnobValue (double ms);
