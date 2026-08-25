@@ -11,8 +11,11 @@ using namespace vspd;
 
 namespace
 {
-constexpr int kFooterH = 20;
-constexpr int kHeaderH = 32;
+constexpr int kDesignW = 800, kDesignH = 500;
+constexpr float kSwitchGap = 3.0f;
+
+const char* const kDefaultHint = "shift-drag fine  .  double-click reset  .  type values";
+
 // 3x3 grid, ascending pitch in reading order: octaves where the user expects them,
 // fourths and fifths filling the gaps.
 constexpr int kSpeedGridCols = 3;
@@ -25,31 +28,92 @@ constexpr const char* kSpeedPresetNames[] { "1/4", "1/2", "5dn",
 constexpr const char* kSpeedPresetDesc[] { "two octaves down", "one octave down", "a fifth down",
                                            "a fourth down",    "unison",          "a fourth up",
                                            "a fifth up",       "one octave up",   "two octaves up" };
+constexpr int kZoomPercents[] { 75, 100, 125, 150, 200 };
 
 float speedForPreset (int i) { return std::pow (2.0f, kSpeedPresetSemis[i] / 12.0f); }
 
-juce::String msText (double ms)
+std::pair<juce::String, juce::String> msParts (double ms)
 {
-    if (ms >= 1000.0) return juce::String (ms / 1000.0, 2) + " s";
-    return juce::String (ms, ms < 10.0 ? 2 : (ms < 100.0 ? 1 : 0)) + " ms";
+    if (ms >= 1000.0) return { juce::String (ms / 1000.0, 2), "s" };
+    return { juce::String (ms, ms < 10.0 ? 2 : (ms < 100.0 ? 1 : 0)), "ms" };
 }
 
-void drawPanel (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& title)
+juce::String msText (double ms)
 {
-    g.setColour (juce::Colour (col::panel));
-    g.fillRoundedRectangle (r.toFloat(), 4.0f);
-    g.setColour (juce::Colour (col::panelEdge));
-    g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 4.0f, 1.0f);
+    const auto p = msParts (ms);
+    return p.first + " " + p.second;
+}
 
-    if (title.isNotEmpty())
+juce::String bandLabel (float f)
+{
+    return f >= 1000.0f ? juce::String (f / 1000.0f, f == 16000.0f ? 0 : 1) + "k"
+                        : juce::String ((int) f);
+}
+
+juce::String signedDb (float db)
+{
+    return (db > 0.0f ? "+" : "") + juce::String (db, 1);
+}
+
+/** Straight divisions and bars get a label on the time ring; triplets and dots a tick. */
+bool isMajorDivision (const juce::String& name)
+{
+    return ! name.containsChar ('T') && ! name.containsChar ('D');
+}
+
+void drawCaption (juce::Graphics& g, const juce::String& t, float centreX, float baseline)
+{
+    g.setFont (uiFont (9.5f));
+    g.setColour (juce::Colour (col::mid));
+    g.drawSingleLineText (t, juce::roundToInt (centreX), juce::roundToInt (baseline),
+                          juce::Justification::horizontallyCentred);
+}
+
+void drawMono (juce::Graphics& g, const juce::String& t, float centreX, float baseline,
+               float pt, juce::Colour c)
+{
+    g.setFont (monoFont (pt));
+    g.setColour (c);
+    g.drawSingleLineText (t, juce::roundToInt (centreX), juce::roundToInt (baseline),
+                          juce::Justification::horizontallyCentred);
+}
+
+void drawSectionTitle (juce::Graphics& g, const juce::String& t, float centreX, float baseline)
+{
+    g.setColour (juce::Colour (col::heading));
+    drawTrackedCentred (g, uiFont (14.0f), t, centreX, baseline, 2.6f);
+}
+
+void drawSwitchSegment (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t,
+                        bool on, bool enabled)
+{
+    g.setColour (juce::Colour (on ? col::accent : col::panel)
+                   .withAlpha (enabled ? 1.0f : 0.45f));
+    g.fillRoundedRectangle (r, 3.0f);
+    if (! on)
     {
-        g.setColour (juce::Colour (col::accent));
-        g.fillRect (r.getX() + 10, r.getY() + 9, 3, 10);
-        g.setColour (juce::Colour (col::dim));
-        g.setFont (juce::FontOptions (10.0f));
-        g.drawText (title, r.getX() + 18, r.getY() + 7, r.getWidth() - 24, 14,
-                    juce::Justification::centredLeft, false);
+        g.setColour (juce::Colour (col::panelEdge).withAlpha (enabled ? 1.0f : 0.45f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, 1.0f);
     }
+    if (t.isEmpty()) return;
+    g.setFont (uiFont (8.5f, on));
+    g.setColour (juce::Colour (on ? col::onAccent : col::mid).withAlpha (enabled ? 1.0f : 0.45f));
+    g.drawText (t, r.toNearestInt(), juce::Justification::centred, false);
+}
+
+/** An eighth note, drawn rather than typed - the string literals here stay ASCII. */
+void drawNoteIcon (juce::Graphics& g, juce::Rectangle<float> area, juce::Colour c)
+{
+    const float h = juce::jmin (area.getHeight(), 13.0f);
+    const auto box = area.withSizeKeepingCentre (h * 0.72f, h);
+    g.setColour (c);
+    g.fillEllipse (box.getX(), box.getBottom() - h * 0.32f, h * 0.44f, h * 0.32f);
+    g.fillRect (box.getX() + h * 0.38f, box.getY(), h * 0.09f, h * 0.80f);
+    juce::Path flag;
+    flag.startNewSubPath (box.getX() + h * 0.46f, box.getY() + h * 0.04f);
+    flag.quadraticTo (box.getRight(), box.getY() + h * 0.16f,
+                      box.getX() + h * 0.52f, box.getY() + h * 0.44f);
+    g.strokePath (flag, juce::PathStrokeType (h * 0.11f));
 }
 } // namespace
 
@@ -65,118 +129,177 @@ ChoiceSwitch::ChoiceSwitch (juce::RangedAudioParameter& p, juce::StringArray lab
 void ChoiceSwitch::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (col::panelEdge));
-    g.fillRoundedRectangle (b, 3.0f);
+    const int n = juce::jmax (1, items.size());
+    const float segW = (b.getWidth() - kSwitchGap * (float) (n - 1)) / (float) n;
 
-    const float segW = b.getWidth() / (float) juce::jmax (1, items.size());
     for (int i = 0; i < items.size(); ++i)
-    {
-        const auto seg = juce::Rectangle<float> (b.getX() + i * segW, b.getY(), segW, b.getHeight());
-        if (i == index)
-        {
-            g.setColour (juce::Colour (col::accentDim));
-            g.fillRoundedRectangle (seg.reduced (1.0f), 2.0f);
-        }
-        g.setColour (juce::Colour (i == index ? col::text : col::dim));
-        g.setFont (juce::FontOptions (10.0f));
-        g.drawText (items[i], seg.toNearestInt(), juce::Justification::centred, false);
-    }
+        drawSwitchSegment (g, { b.getX() + (float) i * (segW + kSwitchGap), b.getY(),
+                                segW, b.getHeight() },
+                           items[i], i == index, isEnabled());
 }
 
 void ChoiceSwitch::mouseDown (const juce::MouseEvent& e)
 {
-    if (items.isEmpty() || getWidth() <= 0) return;
+    if (items.isEmpty() || getWidth() <= 0 || ! isEnabled()) return;
     const int seg = juce::jlimit (0, items.size() - 1, e.x * items.size() / getWidth());
     attachment.setValueAsCompleteGesture ((float) seg);
 }
 
 //==============================================================================
-LabeledKnob::LabeledKnob (juce::AudioProcessorValueTreeState& state, const juce::String& paramId,
-                          const juce::String& caption, juce::String helpText)
+ToggleChip::ToggleChip (juce::RangedAudioParameter& p, juce::String label, juce::String helpText,
+                        Icon iconToDraw)
+    : text (std::move (label)), icon (std::move (iconToDraw)),
+      attachment (p, [this] (float v) { on = v > 0.5f; repaint(); })
 {
-    param = state.getParameter (paramId);
-
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.2f,
-                                juce::MathConstants<float>::pi * 2.8f, true);
-    slider.onValueChange = [this] { refreshValue(); };
-    addAndMakeVisible (slider);
-
-    captionLabel.setText (caption, juce::dontSendNotification);
-    captionLabel.setJustificationType (juce::Justification::centred);
-    captionLabel.setFont (juce::FontOptions (10.0f));
-    captionLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim));
-    captionLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (captionLabel);
-
-    valueLabel.setJustificationType (juce::Justification::centred);
-    valueLabel.setFont (juce::FontOptions (12.0f));
-    valueLabel.setColour (juce::Label::textColourId, juce::Colour (col::text));
-    valueLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (valueLabel);
-
     getProperties().set ("help", helpText);
-
-    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        state, paramId, slider);
-    refreshValue();
+    attachment.sendInitialUpdate();
 }
 
-void LabeledKnob::resized()
+void ToggleChip::paint (juce::Graphics& g)
 {
-    auto b = getLocalBounds();
-    auto caption = b.removeFromTop (12);
-    if (hasLed) ledArea = caption.removeFromRight (12).withSizeKeepingCentre (7, 7);
-    captionLabel.setBounds (caption);
-    valueLabel.setBounds (b.removeFromBottom (15));
-    slider.setBounds (b);
+    drawSwitchSegment (g, getLocalBounds().toFloat(), icon ? juce::String() : text, on, isEnabled());
+    if (icon) icon (g, getLocalBounds().toFloat(), juce::Colour (on ? col::onAccent : col::mid));
 }
 
-void LabeledKnob::paint (juce::Graphics& g)
+void ToggleChip::mouseDown (const juce::MouseEvent&)
 {
-    if (! hasLed) return;
-    g.setColour (juce::Colour (ledOn ? col::accent : col::track));
-    g.fillEllipse (ledArea.toFloat());
-}
-
-void LabeledKnob::showLed()
-{
-    hasLed = true;
-    resized();
-}
-
-void LabeledKnob::setLed (bool on)
-{
-    if (ledOn == on) return;
-    ledOn = on;
-    repaint (ledArea);
-}
-
-void LabeledKnob::setValueOverride (const juce::String& text)
-{
-    if (override == text) return;
-    override = text;
-    refreshValue();
-}
-
-void LabeledKnob::refreshValue()
-{
-    if (override.isNotEmpty()) { valueLabel.setText (override, juce::dontSendNotification); return; }
-    if (param != nullptr)
-        valueLabel.setText (param->getCurrentValueAsText(), juce::dontSendNotification);
+    attachment.setValueAsCompleteGesture (on ? 0.0f : 1.0f);
 }
 
 //==============================================================================
-void VarispeedDelayEditor::setHelp (juce::Component& c, const juce::String& text)
+void ParamSlider::init (const juce::String& helpText)
+{
+    setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    setRotaryParameters (kRotaryStart, kRotaryEnd, true);
+    getProperties().set ("help", helpText);
+}
+
+ParamSlider::ParamSlider (juce::String helpText)
+{
+    init (helpText);
+}
+
+ParamSlider::ParamSlider (juce::AudioProcessorValueTreeState& state, const juce::String& paramId,
+                          juce::String helpText)
+{
+    init (helpText);
+
+    if (auto* p = state.getParameter (paramId))
+        setDoubleClickReturnValue (true, p->getNormalisableRange()
+                                            .convertFrom0to1 (p->getDefaultValue()));
+
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        state, paramId, *this);
+}
+
+void ParamSlider::mouseDown (const juce::MouseEvent& e)
+{
+    // rotaries take a longer drag; the linear ones have no sensitivity of their own, so
+    // fine mode there means switching to velocity tracking for the duration of the drag
+    const bool fine = e.mods.isShiftDown();
+    if (getSliderStyle() == juce::Slider::LinearVertical)
+    {
+        setVelocityBasedMode (fine);
+        if (fine) setVelocityModeParameters (0.2, 1, 0.0, false);
+    }
+    else
+    {
+        setMouseDragSensitivity (fine ? 1400 : 250);
+    }
+    juce::Slider::mouseDown (e);
+}
+
+void ParamSlider::mouseUp (const juce::MouseEvent& e)
+{
+    juce::Slider::mouseUp (e);
+    setVelocityBasedMode (false);
+}
+
+double ParamSlider::snapValue (double attemptedValue, DragMode)
+{
+    return snapFn ? snapFn (attemptedValue) : attemptedValue;
+}
+
+//==============================================================================
+ValueField::ValueField (juce::RangedAudioParameter& p, float numberPt, float unitPt,
+                        juce::String helpText)
+    : param (p), numPt (numberPt), uPt (unitPt)
+{
+    setJustificationType (juce::Justification::centred);
+    setEditable (true, true, false);
+    getProperties().set ("help", helpText);
+
+    onEdit = [this] (const juce::String& t)
+    {
+        param.beginChangeGesture();
+        param.setValueNotifyingHost (param.getValueForText (t));
+        param.endChangeGesture();
+    };
+    onTextChange = [this] { if (onEdit) onEdit (getText()); };
+}
+
+void ValueField::setDisplay (const juce::String& number, const juce::String& unit)
+{
+    if (isBeingEdited() || (numberText == number && unitText == unit)) return;
+    numberText = number;
+    unitText = unit;
+    // the label's own text seeds the editor, so it carries the unit - typing into a field
+    // reading "20.00 s" has to mean seconds, not twenty milliseconds
+    setText (unit.isEmpty() ? number : number + " " + unit, juce::dontSendNotification);
+    repaint();
+}
+
+void ValueField::setNumberColour (juce::Colour c)
+{
+    if (numberColour == c) return;
+    numberColour = c;
+    repaint();
+}
+
+void ValueField::setMono (bool m) { mono = m; repaint(); }
+
+void ValueField::setActive (bool active)
+{
+    setEnabled (active);
+    setEditable (active, active, false);
+    repaint();
+}
+
+void ValueField::paint (juce::Graphics& g)
+{
+    if (isBeingEdited()) return;   // the text editor carries the design's boxed treatment
+
+    const auto nf = mono ? monoFont (numPt) : uiFont (numPt);
+    const auto uf = mono ? monoFont (uPt)   : uiFont (uPt);
+    const auto number = numberText;
+    const auto unit = unitText.isEmpty() ? juce::String() : " " + unitText;
+    const float nw = juce::GlyphArrangement::getStringWidth (nf, number);
+    const float uw = unit.isEmpty() ? 0.0f : juce::GlyphArrangement::getStringWidth (uf, unit);
+    const float x = ((float) getWidth() - nw - uw) * 0.5f;
+    const float baseline = ((float) getHeight() - nf.getHeight()) * 0.5f + nf.getAscent();
+    const float alpha = isEnabled() ? 1.0f : 0.6f;
+
+    g.setFont (nf);
+    g.setColour (numberColour.withMultipliedAlpha (alpha));
+    g.drawSingleLineText (number, juce::roundToInt (x), juce::roundToInt (baseline));
+
+    if (uw > 0.0f)
+    {
+        g.setFont (uf);
+        g.setColour (juce::Colour (col::dim).withMultipliedAlpha (alpha));
+        g.drawSingleLineText (unit, juce::roundToInt (x + nw), juce::roundToInt (baseline));
+    }
+}
+
+//==============================================================================
+void EditorContent::setHelp (juce::Component& c, const juce::String& text)
 {
     c.getProperties().set ("help", text);
 }
 
-VarispeedDelayEditor::VarispeedDelayEditor (VarispeedDelayProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), repView (p.getEngine())
+EditorContent::EditorContent (VarispeedDelayProcessor& p)
+    : proc (p)
 {
-    setLookAndFeel (&lnf);
     buildControls();
 
     // Debug builds get the authoring row in every format, so presets can be dialled in
@@ -187,38 +310,66 @@ VarispeedDelayEditor::VarispeedDelayEditor (VarispeedDelayProcessor& p)
 #elif JucePlugin_Build_Standalone
     showPresetRow = juce::JUCEApplicationBase::isStandaloneApp();
 #endif
+    presetBox.setVisible (showPresetRow);
+    saveButton.setVisible (showPresetRow);
 
-    setSize (800, 500);
+    setSize (kDesignW, kDesignH);
     addMouseListener (this, true);
     startTimerHz (30);
 }
 
-VarispeedDelayEditor::~VarispeedDelayEditor()
-{
-    setLookAndFeel (nullptr);
-}
-
-void VarispeedDelayEditor::buildControls()
+void EditorContent::buildControls()
 {
     auto& s = proc.getAPVTS();
 
-    timeKnob = std::make_unique<LabeledKnob> (s, pid::timeMs, "TIME",
-        "Delay time - the period between repetitions");
-    speedKnob = std::make_unique<LabeledKnob> (s, pid::speed, "SPEED",
+    timeKnob = std::make_unique<ParamSlider> (
+        juce::String ("Delay time - the period between repetitions"));
+    timeKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    wireTimeKnob();
+    speedKnob = std::make_unique<ParamSlider> (s, pid::speed,
         "Tape speed of every repetition - pitch and length change together");
-    feedbackKnob = std::make_unique<LabeledKnob> (s, pid::feedback, "FEEDBACK",
+    speedKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    feedbackKnob = std::make_unique<ParamSlider> (s, pid::feedback,
         "Recycle gain. Above 1.0 the loop runs away - the soft clip keeps it musical");
-    clipThreshKnob = std::make_unique<LabeledKnob> (s, pid::clipThr, "THRESHOLD",
+    feedbackKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    clipKnob = std::make_unique<ParamSlider> (s, pid::clipThr,
         "Soft clip threshold - the recycle path is transparent below it, tanh above it "
-        "up to the 0 dBFS ceiling. The dot lights while the clip is working");
-    clipThreshKnob->showLed();
-    dryKnob = std::make_unique<LabeledKnob> (s, pid::dry, "DRY", "Dry signal level");
-    wetKnob = std::make_unique<LabeledKnob> (s, pid::wet, "WET",
-        "Wet level. Overlapping repeats sum without compensation, so this is the trim");
+        "up to the 0 dBFS ceiling. The arc turns red while the clip is working");
+    clipKnob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
 
-    for (auto* k : { timeKnob.get(), speedKnob.get(), feedbackKnob.get(), clipThreshKnob.get(),
-                     dryKnob.get(), wetKnob.get() })
+    drySlider = std::make_unique<ParamSlider> (s, pid::dry, "Dry signal level");
+    drySlider->setSliderStyle (juce::Slider::LinearVertical);
+    wetSlider = std::make_unique<ParamSlider> (s, pid::wet,
+        "Wet level. Overlapping repeats sum without compensation, so this is the trim");
+    wetSlider->setSliderStyle (juce::Slider::LinearVertical);
+
+    for (auto* k : { timeKnob.get(), speedKnob.get(), feedbackKnob.get(), clipKnob.get(),
+                     drySlider.get(), wetSlider.get() })
         addAndMakeVisible (*k);
+
+    auto field = [&s] (const char* id, float numPt, float unitPt, const juce::String& help)
+    {
+        return std::make_unique<ValueField> (*s.getParameter (id), numPt, unitPt, help);
+    };
+
+    timeField     = field (pid::timeMs,   15.0f, 8.5f,
+        "Delay time - click to type a value, in ms or with an s suffix for seconds");
+    speedField    = field (pid::speed,    15.0f, 8.5f,
+        "Tape speed - type a ratio like 1.5, or semitones like +7s");
+    feedbackField = field (pid::feedback, 15.0f, 8.5f, "Recycle gain - click to type a value");
+    clipField     = field (pid::clipThr,  14.0f, 8.5f, "Soft clip threshold in dBFS");
+    dryField      = field (pid::dry,      14.0f, 8.5f, "Dry signal level");
+    wetField      = field (pid::wet,      14.0f, 8.5f, "Wet signal level");
+
+    timeField->onEdit  = [this] (const juce::String& t) { setTimeFromText (t); };
+    speedField->onEdit = [this] (const juce::String& t) { setSpeedFromText (t); };
+    // the syntax hint is only useful while the field is open, so it comes and goes with it
+    speedField->onEditorShow = [this] { repaint(); };
+    speedField->onEditorHide = [this] { repaint(); };
+
+    for (auto* f : { timeField.get(), speedField.get(), feedbackField.get(), clipField.get(),
+                     dryField.get(), wetField.get() })
+        addAndMakeVisible (*f);
 
     auto* pSync    = s.getParameter (pid::timeSync);
     auto* pMode    = s.getParameter (pid::timeMode);
@@ -227,8 +378,8 @@ void VarispeedDelayEditor::buildControls()
     auto* pClip    = s.getParameter (pid::clipOn);
     auto* pEq      = s.getParameter (pid::eqOn);
 
-    syncSwitch = std::make_unique<ChoiceSwitch> (*pSync, juce::StringArray { "FREE", "SYNC" },
-        "FREE reads the time knob; SYNC locks the period to the host grid");
+    syncChip = std::make_unique<ToggleChip> (*pSync, "SYNC",
+        "Lock the period to the host grid instead of the time knob", &drawNoteIcon);
     timeModeSwitch = std::make_unique<ChoiceSwitch> (*pMode, juce::StringArray { "REGRID", "BEND" },
         "REGRID snaps to the new time and leaves the tail alone. BEND bends everything sounding");
     spacingSwitch = std::make_unique<ChoiceSwitch> (*pSpacing, juce::StringArray { "GRID", "TAPE" },
@@ -240,9 +391,15 @@ void VarispeedDelayEditor::buildControls()
     eqOnSwitch = std::make_unique<ChoiceSwitch> (*pEq, juce::StringArray { "OFF", "ON" },
         "7-band EQ on the repetition path - repetition N carries the curve N times");
 
-    for (auto* c : { syncSwitch.get(), timeModeSwitch.get(), spacingSwitch.get(),
-                     fbTypeSwitch.get(), clipSwitch.get(), eqOnSwitch.get() })
+    addAndMakeVisible (*syncChip);
+    for (auto* c : { timeModeSwitch.get(), spacingSwitch.get(), fbTypeSwitch.get(),
+                     clipSwitch.get(), eqOnSwitch.get() })
         addAndMakeVisible (*c);
+
+    setHelp (tapButton, "Tap a tempo - sets the delay time when free, the sync tempo when the "
+                        "host has none");
+    tapButton.onClick = [this] { tapTempo(); };
+    addAndMakeVisible (tapButton);
 
     for (int i = 0; i < numDivisions(); ++i)
         divBox.addItem (division (i).name, i + 1);
@@ -274,44 +431,53 @@ void VarispeedDelayEditor::buildControls()
 
     for (int i = 0; i < kNumEqBands; ++i)
     {
-        auto* sl = new juce::Slider (juce::Slider::LinearVertical, juce::Slider::NoTextBox);
-        const auto f = GraphicEQ::bandFreq[i];
-        const auto label = f >= 1000.0f ? juce::String (f / 1000.0f, f == 16000.0f ? 0 : 1) + "k"
-                                        : juce::String ((int) f);
-        setHelp (*sl, label + " Hz band, +/-12 dB - applied once per repetition, so it accumulates");
+        const auto label = bandLabel (GraphicEQ::bandFreq[i]);
+        const auto help = label + " Hz band, +/-12 dB - applied once per repetition, so it accumulates";
+
+        auto* sl = new ParamSlider (s, pid::eqBand (i), help);
+        sl->setSliderStyle (juce::Slider::LinearVertical);
         addAndMakeVisible (sl);
         eqSliders.add (sl);
-        eqAttachments.add (new juce::AudioProcessorValueTreeState::SliderAttachment (
-            s, pid::eqBand (i), *sl));
 
-        auto* lb = new juce::Label ({}, label);
-        lb->setJustificationType (juce::Justification::centred);
-        lb->setFont (juce::FontOptions (9.0f));
-        lb->setColour (juce::Label::textColourId, juce::Colour (col::dim));
-        lb->setInterceptsMouseClicks (true, false);
-        setHelp (*lb, sl->getProperties()["help"].toString());
-        addAndMakeVisible (lb);
-        eqLabels.add (lb);
+        auto* f = new ValueField (*s.getParameter (pid::eqBand (i)), 8.5f, 8.5f, help);
+        f->setMono (true);
+        addAndMakeVisible (f);
+        eqFields.add (f);
     }
 
-    addAndMakeVisible (repView);
+    helpMark.setText ("?", juce::dontSendNotification);
+    helpMark.setFont (monoFont (9.0f));
+    helpMark.setJustificationType (juce::Justification::centred);
+    helpMark.setColour (juce::Label::textColourId, juce::Colour (col::dim));
+    setHelp (helpMark, "Hover any control for a one-line description here in the footer");
+    addAndMakeVisible (helpMark);
 
-    helpButton.setConnectedEdges (0);
-    setHelp (helpButton, "Hover over controls for help");
-    addAndMakeVisible (helpButton);
-
-    contextHelpLabel.setFont (juce::FontOptions (10.0f));
-    contextHelpLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim));
+    contextHelpLabel.setBorderSize ({});
+    contextHelpLabel.setFont (monoFont (8.0f));
+    contextHelpLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
+    contextHelpLabel.setJustificationType (juce::Justification::centred);
     contextHelpLabel.setMinimumHorizontalScale (0.8f);
     contextHelpLabel.setInterceptsMouseClicks (false, false);
+    contextHelpLabel.setText (kDefaultHint, juce::dontSendNotification);
     addAndMakeVisible (contextHelpLabel);
 
-    footerLabel.setFont (juce::FontOptions (10.0f));
-    footerLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim));
-    footerLabel.setJustificationType (juce::Justification::centredRight);
+    footerLabel.setBorderSize ({});   // the default 5 px inset would clip the build date
+    footerLabel.setFont (monoFont (8.0f));
+    footerLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
+    footerLabel.setJustificationType (juce::Justification::centredLeft);
     footerLabel.setMinimumHorizontalScale (1.0f);
     footerLabel.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (footerLabel);
+
+    for (int i = 0; i < (int) std::size (kZoomPercents); ++i)
+        zoomBox.addItem (juce::String (kZoomPercents[i]) + "%", i + 1);
+    setHelp (zoomBox, "Editor size - drag the corner for anything in between");
+    zoomBox.onChange = [this]
+    {
+        const int idx = zoomBox.getSelectedId() - 1;
+        if (idx >= 0 && onZoomRequest) onZoomRequest ((float) kZoomPercents[idx] / 100.0f);
+    };
+    addAndMakeVisible (zoomBox);
 
     setHelp (presetBox, "Factory and user presets - user presets come from VSPD_PRESET_DIR");
     presetBox.onChange = [this]
@@ -328,7 +494,7 @@ void VarispeedDelayEditor::buildControls()
     refreshPresetCombo();
 }
 
-void VarispeedDelayEditor::refreshPresetCombo()
+void EditorContent::refreshPresetCombo()
 {
     presetBox.clear (juce::dontSendNotification);
     auto& pm = proc.getPresets();
@@ -337,7 +503,7 @@ void VarispeedDelayEditor::refreshPresetCombo()
     if (pm.numPresets() == 0) presetBox.setTextWhenNoChoicesAvailable ("no presets");
 }
 
-void VarispeedDelayEditor::showSaveDialog()
+void EditorContent::showSaveDialog()
 {
     saveWindow = std::make_unique<juce::AlertWindow> (
         "Save preset",
@@ -357,182 +523,424 @@ void VarispeedDelayEditor::showSaveDialog()
     }), false);
 }
 
-//==============================================================================
-void VarispeedDelayEditor::paint (juce::Graphics& g)
+/** The knob rides the millisecond scale in both modes; in sync it lands on the ring's
+    ticks and writes the division, so the pointer and the labels never disagree. */
+void EditorContent::wireTimeKnob()
 {
-    g.fillAll (juce::Colour (col::background));
+    auto& s = proc.getAPVTS();
+    auto* pMs = s.getParameter (pid::timeMs);
+    auto* pDiv = s.getParameter (pid::timeDiv);
+    if (pMs == nullptr || pDiv == nullptr) return;
 
-    g.setColour (juce::Colour (col::text));
-    g.setFont (juce::FontOptions (16.0f));
-    g.drawText ("VARISPEED DELAY", headerArea.withTrimmedLeft (12),
-                juce::Justification::centredLeft, false);
-    g.setColour (juce::Colour (col::accent));
-    g.fillRect (headerArea.getX() + 12, headerArea.getBottom() - 3, getWidth() - 24, 1);
+    const auto& r = pMs->getNormalisableRange();
+    timeKnob->setNormalisableRange ({ (double) r.start, (double) r.end,
+                                     (double) r.interval, (double) r.skew, r.symmetricSkew });
+    timeKnob->setDoubleClickReturnValue (true, (double) r.convertFrom0to1 (pMs->getDefaultValue()));
 
-    drawPanel (g, controlArea, {});
-    drawPanel (g, eqArea, "GRAPHIC EQ");
-    drawPanel (g, bottomArea, {});
+    // never write back into a knob the user is holding - that is what turns a float
+    // round trip into a drag that fights itself
+    timeMsAttachment = std::make_unique<juce::ParameterAttachment> (*pMs,
+        [this] (float v) { if (! syncOn && ! draggingTime) setTimeKnobValue ((double) v); });
+    timeDivAttachment = std::make_unique<juce::ParameterAttachment> (*pDiv,
+        [this] (float v)
+        {
+            divIndex = (int) std::round (v);
+            if (syncOn && ! draggingTime) setTimeKnobValue (divisionMs (divIndex));
+        });
+    timeKnob->snapFn = [this] (double v) { return syncOn ? divisionMs (nearestDivision (v)) : v; };
+    timeMsAttachment->sendInitialUpdate();
+    timeDivAttachment->sendInitialUpdate();
 
-    const int thirds = controlArea.getWidth() / 3;
-    g.setColour (juce::Colour (col::panelEdge));
-    g.drawVerticalLine (controlArea.getX() + thirds, (float) controlArea.getY() + 8.0f,
-                        (float) controlArea.getBottom() - 8.0f);
-    g.drawVerticalLine (controlArea.getX() + 2 * thirds, (float) controlArea.getY() + 8.0f,
-                        (float) controlArea.getBottom() - 8.0f);
+    timeKnob->onDragStart = [this]
+    {
+        draggingTime = true;
+        (syncOn ? *timeDivAttachment : *timeMsAttachment).beginGesture();
+    };
+    timeKnob->onDragEnd = [this]
+    {
+        (syncOn ? *timeDivAttachment : *timeMsAttachment).endGesture();
+        draggingTime = false;
+    };
+    timeKnob->onValueChange = [this] { pushTimeFromKnob(); };
 }
 
-void VarispeedDelayEditor::resized()
+void EditorContent::pushTimeFromKnob()
 {
-    auto area = getLocalBounds();
-
-    footerArea = area.removeFromBottom (kFooterH);
-    headerArea = area.removeFromTop (kHeaderH);
-    area.reduce (10, 6);
-
-    if (showPresetRow)
+    const double v = timeKnob->getValue();
+    if (syncOn)
     {
-        presetArea = area.removeFromBottom (24);
-        area.removeFromBottom (6);
-        presetBox.setVisible (true);
-        saveButton.setVisible (true);
-
-        auto pr = presetArea;
-        presetBox.setBounds (pr.removeFromLeft (240).reduced (0, 1));
-        pr.removeFromLeft (6);
-        saveButton.setBounds (pr.removeFromLeft (70).reduced (0, 1));
-    }
-
-    controlArea = area.removeFromTop (160);
-    area.removeFromTop (6);
-    eqArea = area.removeFromTop (118);
-    area.removeFromTop (6);
-    bottomArea = area;
-
-    // ---- controls: TIME | SPEED | FEEDBACK -------------------------------
-    auto ca = controlArea.reduced (10, 10);
-    const int colW = ca.getWidth() / 3;
-
-    auto timeCol = ca.removeFromLeft (colW).reduced (6, 0);
-    timeKnob->setBounds (timeCol.removeFromLeft (86));
-    timeCol.removeFromLeft (8);
-    {
-        auto rows = timeCol.withTrimmedTop (14);
-        syncSwitch->setBounds (rows.removeFromTop (22));
-        rows.removeFromTop (5);
-        divBox.setBounds (rows.removeFromTop (22));
-        rows.removeFromTop (5);
-        timeModeSwitch->setBounds (rows.removeFromTop (22));
-        rows.removeFromTop (5);
-        spacingSwitch->setBounds (rows.removeFromTop (22));
-    }
-
-    auto speedCol = ca.removeFromLeft (colW).reduced (6, 0);
-    speedKnob->setBounds (speedCol.removeFromLeft (86));
-    speedCol.removeFromLeft (8);
-    {
-        constexpr int cellH = 26, gap = 3;
-        const int rows = (speedPresets.size() + kSpeedGridCols - 1) / kSpeedGridCols;
-        auto grid = speedCol.withSizeKeepingCentre (speedCol.getWidth(),
-                                                    rows * cellH + (rows - 1) * gap);
-        for (int r = 0; r < rows; ++r)
+        const int d = nearestDivision (v);
+        auto& att = *timeDivAttachment;
+        if (d != divIndex)
         {
-            auto row = grid.removeFromTop (cellH);
-            grid.removeFromTop (gap);
-            const int bw = row.getWidth() / kSpeedGridCols;
-            for (int c = 0; c < kSpeedGridCols; ++c)
-                if (auto* b = speedPresets[r * kSpeedGridCols + c])
-                    b->setBounds (row.removeFromLeft (bw).reduced (2, 0));
+            divIndex = d;
+            if (draggingTime) att.setValueAsPartOfGesture ((float) d);
+            else              att.setValueAsCompleteGesture ((float) d);
         }
     }
+    else
+    {
+        auto& att = *timeMsAttachment;
+        if (draggingTime) att.setValueAsPartOfGesture ((float) v);
+        else              att.setValueAsCompleteGesture ((float) v);
+    }
+}
 
-    auto fbCol = ca.reduced (6, 0);
-    feedbackKnob->setBounds (fbCol.removeFromLeft (86));
-    fbCol.removeFromLeft (8);
-    fbTypeSwitch->setBounds (fbCol.withSizeKeepingCentre (fbCol.getWidth(), 24));
+void EditorContent::setTimeKnobValue (double ms)
+{
+    timeKnob->setValue (ms, juce::dontSendNotification);
+}
 
-    // ---- EQ ---------------------------------------------------------------
-    auto ea = eqArea.reduced (10, 0).withTrimmedTop (24).withTrimmedBottom (8);
-    eqOnSwitch->setBounds (ea.removeFromLeft (62).withSizeKeepingCentre (62, 24));
-    ea.removeFromLeft (14);
+double EditorContent::divisionMs (int index) const
+{
+    return 60000.0 / juce::jmax (1.0, bpm) * division (index).quarters;
+}
 
-    const int bandW = ea.getWidth() / kNumEqBands;
+int EditorContent::nearestDivision (double ms) const
+{
+    int best = 0;
+    double bestDistance = 1.0e30;
+    for (int i = 0; i < numDivisions(); ++i)
+    {
+        // ratios, not differences: 1/32 and 1/16 are as far apart as 1 bar and 2 bars
+        const double d = std::abs (std::log (juce::jmax (1.0e-6, divisionMs (i)))
+                                   - std::log (juce::jmax (1.0e-6, ms)));
+        if (d < bestDistance) { bestDistance = d; best = i; }
+    }
+    return best;
+}
+
+void EditorContent::tapTempo()
+{
+    const auto now = juce::Time::currentTimeMillis();
+    if (! tapTimes.isEmpty() && now - tapTimes.getLast() > 2500) tapTimes.clearQuick();
+    tapTimes.add (now);
+    while (tapTimes.size() > 5) tapTimes.remove (0);
+    if (tapTimes.size() < 2) return;
+
+    const double interval = (double) (tapTimes.getLast() - tapTimes.getFirst())
+                            / (double) (tapTimes.size() - 1);
+    if (interval < 50.0 || interval > 4000.0) return;
+
+    proc.setFallbackBpm (juce::jlimit (20.0, 300.0, 60000.0 / interval));
+
+    // free running, the tap is the delay time itself; in sync it only feeds the tempo
+    if (! syncOn)
+        if (auto* p = proc.getAPVTS().getParameter (pid::timeMs))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->getNormalisableRange().convertTo0to1 ((float) interval));
+            p->endChangeGesture();
+        }
+}
+
+void EditorContent::setTimeFromText (const juce::String& t)
+{
+    auto* p = proc.getAPVTS().getParameter (pid::timeMs);
+    if (p == nullptr) return;
+
+    const auto text = t.trim().toLowerCase();
+    double ms = text.getDoubleValue();
+    if (text.endsWithChar ('s') && ! text.endsWith ("ms")) ms *= 1000.0;
+
+    const auto& range = p->getNormalisableRange();
+    p->beginChangeGesture();
+    p->setValueNotifyingHost (range.convertTo0to1 (juce::jlimit (range.start, range.end, (float) ms)));
+    p->endChangeGesture();
+}
+
+void EditorContent::setSpeedFromText (const juce::String& t)
+{
+    auto* p = proc.getAPVTS().getParameter (pid::speed);
+    if (p == nullptr) return;
+
+    const auto trimmed = t.trim().toLowerCase();
+    const double number = trimmed.getDoubleValue();
+    const bool semitones = trimmed.endsWithChar ('s') || trimmed.contains ("semi");
+    const double value = semitones ? std::pow (2.0, number / 12.0) : number;
+
+    const auto& range = p->getNormalisableRange();
+    p->beginChangeGesture();
+    p->setValueNotifyingHost (range.convertTo0to1 (juce::jlimit (range.start, range.end,
+                                                                 (float) value)));
+    p->endChangeGesture();
+}
+
+//==============================================================================
+void EditorContent::resized()
+{
+    presetBox.setBounds (600, 10, 130, 20);
+    saveButton.setBounds (738, 10, 42, 20);
+
+    // ---- DELAY ------------------------------------------------------------
+    syncChip->setBounds (30, 98, 30, 22);
+    tapButton.setBounds (64, 98, 38, 22);
+    timeField->setBounds (126, 96, 80, 20);
+    divBox.setBounds (216, 98, 58, 20);
+    timeKnob->setBounds (112, 142, 80, 80);
+    spacingSwitch->setBounds (24, 242, 83, 16);
+    timeModeSwitch->setBounds (156, 242, 105, 16);
+
+    // ---- SPEED ------------------------------------------------------------
+    speedField->setBounds (356, 96, 130, 26);
+    speedKnob->setBounds (301, 143, 94, 94);
+    for (int i = 0; i < speedPresets.size(); ++i)
+        speedPresets[i]->setBounds (400 + (i % kSpeedGridCols) * 52,
+                                    156 + (i / kSpeedGridCols) * 24, 48, 20);
+
+    // ---- FEEDBACK ---------------------------------------------------------
+    feedbackField->setBounds (638, 96, 80, 20);
+    feedbackKnob->setBounds (631, 129, 94, 94);
+    fbTypeSwitch->setBounds (620, 244, 116, 16);   // centred on the knob at 678
+
+    // ---- GRAPHIC EQ -------------------------------------------------------
+    eqOnSwitch->setBounds (300, 276, 79, 16);
     for (int i = 0; i < kNumEqBands; ++i)
     {
-        auto band = ea.removeFromLeft (bandW);
-        eqLabels[i]->setBounds (band.removeFromBottom (12));
-        eqSliders[i]->setBounds (band.reduced (bandW / 4, 0));
+        const int cx = 52 + 48 * i;
+        eqFields[i]->setBounds (cx - 22, 300, 44, 12);
+        eqSliders[i]->setBounds (cx - 10, 318, 20, 84);
     }
 
-    // ---- clip / dry / wet + repetition view -------------------------------
-    auto ba = bottomArea.reduced (10, 6);
-    clipSwitch->setBounds (ba.removeFromLeft (92).withSizeKeepingCentre (92, 24));
-    ba.removeFromLeft (8);
-    clipThreshKnob->setBounds (ba.removeFromLeft (78));
-    ba.removeFromLeft (12);
-    dryKnob->setBounds (ba.removeFromLeft (78));
-    ba.removeFromLeft (4);
-    wetKnob->setBounds (ba.removeFromLeft (78));
-    ba.removeFromLeft (12);
-    repView.setBounds (ba);
+    // ---- OUTPUT -----------------------------------------------------------
+    clipField->setBounds (422, 320, 80, 20);
+    clipKnob->setBounds (420, 338, 84, 84);
+    clipSwitch->setBounds (412, 424, 100, 16);   // centred on the knob at 462
+    dryField->setBounds (610, 320, 60, 20);
+    drySlider->setBounds (630, 348, 20, 76);
+    wetField->setBounds (686, 320, 60, 20);
+    wetSlider->setBounds (706, 348, 20, 76);
 
+    // ---- footer -----------------------------------------------------------
+    zoomBox.setBounds (690, 476, 58, 18);
+    helpMark.setBounds (752, 476, 16, 18);
     layoutFooter();
 }
 
-//==============================================================================
-void VarispeedDelayEditor::mouseEnter (const juce::MouseEvent& e)
+void EditorContent::layoutFooter()
 {
-    // walk up from the hovered component so a child inherits its panel's help; clear the
-    // label when nothing in the chain carries one, rather than leaving the last one up
+    auto fa = juce::Rectangle<int> (20, 476, 660, 18);
+
+    // give the version block exactly what it needs and hand the rest to the help text,
+    // which is the part that actually has something to say
+    const int needed = juce::GlyphArrangement::getStringWidthInt (footerLabel.getFont(),
+                                                                 footerLabel.getText()) + 6;
+    const int forFooter = juce::jlimit (0, juce::jmax (0, fa.getWidth() - 200), needed);
+
+    footerLabel.setBounds (fa.removeFromLeft (forFooter));
+    fa.removeFromLeft (10);
+    contextHelpLabel.setBounds (fa);
+}
+
+//==============================================================================
+void EditorContent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour (col::background));
+
+    g.setColour (juce::Colour (col::mid));
+    drawTracked (g, uiFont (10.0f, true), "VARISPEED DELAY", 20.0f, 24.0f, 3.4f);
+
+    g.setColour (juce::Colour (col::divider).withAlpha (0.6f));
+    g.drawHorizontalLine (38, 0.0f, (float) kDesignW);
+    g.drawHorizontalLine (262, 0.0f, (float) kDesignW);
+    g.drawHorizontalLine (468, 0.0f, (float) kDesignW);
+    g.drawVerticalLine (286, 44.0f, 258.0f);
+    g.drawVerticalLine (556, 44.0f, 258.0f);
+    g.drawVerticalLine (392, 268.0f, 462.0f);
+
+    drawSectionTitle (g, "DELAY", 149.0f, 64.0f);
+    drawSectionTitle (g, "SPEED", 421.0f, 64.0f);
+    drawSectionTitle (g, "FEEDBACK", 678.0f, 64.0f);
+    drawSectionTitle (g, "OUTPUT", 596.0f, 288.0f);
+    g.setColour (juce::Colour (col::heading));
+    drawTracked (g, uiFont (10.0f), "GRAPHIC EQ", 24.0f, 288.0f, 2.4f);
+
+    // ---- DELAY ------------------------------------------------------------
+    drawCaption (g, "Tempo Sync", 66.0f, 90.0f);
+    drawCaption (g, "Delay Time", 166.0f, 90.0f);
+    drawCaption (g, "Note", 245.0f, 90.0f);
+    drawMono (g, juce::String (bpm, 1) + " BPM", 83.0f, 134.0f, 7.0f, juce::Colour (col::dim));
+    drawDivisionRing (g);
+    drawMono (g, "period " + msText (periodMs), 152.0f, 230.0f, 7.0f, juce::Colour (col::dim));
+
+    // ---- SPEED ------------------------------------------------------------
+    drawCaption (g, "Speed", 421.0f, 88.0f);
+    if (speedField->isBeingEdited())
+        drawMono (g, "type  1.5  |  +7s  |  -1.5s", 421.0f, 134.0f, 7.5f, juce::Colour (col::dim));
+    drawMono (g, juce::String (12.0 * std::log2 (juce::jmax (1.0e-6, speedShown)), 2) + " semitones",
+              348.0f, 234.0f, 7.0f, juce::Colour (col::dim));
+
+    // ---- FEEDBACK ---------------------------------------------------------
+    drawCaption (g, "Feedback", 678.0f, 92.0f);
+    const bool runaway = loopGain >= 1.0;
+    g.setColour (juce::Colour (runaway ? col::warn : col::dim));
+    drawTrackedCentred (g, monoFont (9.5f).boldened(),
+                        "LOOP GAIN " + juce::String (loopGain, 2) + "x", 678.0f, 216.0f, 0.6f);
+    if (eqOn && eqPeakDb > 0.05f)
+        drawMono (g, "EQ " + signedDb (eqPeakDb) + " dB at " + bandLabel (GraphicEQ::bandFreq[eqPeakBand])
+                     + " - safe below " + juce::String (safeFeedback, 2),
+                  678.0f, 230.0f, 7.0f, juce::Colour (col::dim));
+
+    // ---- GRAPHIC EQ -------------------------------------------------------
+    g.setColour (juce::Colour (col::dim).withAlpha (0.22f));
+    g.drawHorizontalLine (360, 40.0f, 372.0f);
+    for (int i = 0; i < kNumEqBands; ++i)
+        drawMono (g, bandLabel (GraphicEQ::bandFreq[i]), (float) (52 + 48 * i), 418.0f, 7.5f,
+                  juce::Colour (col::dim));
+    g.setFont (monoFont (7.5f));
+    g.setColour (juce::Colour (col::dim).withAlpha (0.7f));
+    g.drawSingleLineText ("dB", 24, 440);
+    g.drawSingleLineText ("Hz", 360, 440, juce::Justification::right);
+
+    // ---- OUTPUT -----------------------------------------------------------
+    drawCaption (g, "Clip Threshold", 462.0f, 314.0f);
+    drawCaption (g, "Dry", 640.0f, 314.0f);
+    drawCaption (g, "Wet", 716.0f, 314.0f);
+}
+
+void EditorContent::drawDivisionRing (juce::Graphics& g) const
+{
+    auto* p = proc.getAPVTS().getParameter (pid::timeMs);
+    if (p == nullptr) return;
+
+    const auto bounds = timeKnob->getBounds();
+    const auto centre = bounds.toFloat().getCentre();
+    const float r = knobArcRadius (bounds);
+    const auto& range = p->getNormalisableRange();
+    const float sweep = kRotaryEnd - kRotaryStart;
+
+    for (int i = 0; i < numDivisions(); ++i)
+    {
+        const juce::String name (division (i).name);
+        const double ms = 60000.0 / juce::jmax (1.0, bpm) * division (i).quarters;
+        if (ms < range.start || ms > range.end) continue;
+
+        const float angle = kRotaryStart + range.convertTo0to1 ((float) ms) * sweep;
+        const auto dir = juce::Point<float> (std::sin (angle), -std::cos (angle));
+        const bool major = isMajorDivision (name);
+        const bool current = syncOn && i == divIndex;
+
+        g.setColour (current ? juce::Colour (col::accent)
+                             : juce::Colour (col::dim).withAlpha (major ? 0.5f : 0.3f));
+        g.drawLine ({ centre + dir * (r + 4.0f), centre + dir * (r + (major ? 9.0f : 7.0f)) },
+                    major || current ? 1.6f : 1.0f);
+
+        if (! major) continue;
+        const auto at = centre + dir * (r + 22.0f);
+        drawMono (g, name, at.x, at.y + 2.4f, 6.5f,
+                  current ? juce::Colour (col::accent) : juce::Colour (col::dim).withAlpha (0.7f));
+    }
+}
+
+//==============================================================================
+void EditorContent::mouseEnter (const juce::MouseEvent& e)
+{
+    // walk up from the hovered component so a child inherits its panel's help; fall back to
+    // the standing hint when nothing in the chain carries one
     juce::String help;
     for (auto* c = e.eventComponent; c != nullptr; c = c->getParentComponent())
     {
         help = c->getProperties()["help"].toString();
         if (help.isNotEmpty() || c == this) break;
     }
-    contextHelpLabel.setText (help, juce::dontSendNotification);
+    contextHelpLabel.setText (help.isNotEmpty() ? help : kDefaultHint, juce::dontSendNotification);
 }
 
-void VarispeedDelayEditor::mouseExit (const juce::MouseEvent& e)
+void EditorContent::mouseExit (const juce::MouseEvent& e)
 {
-    if (e.eventComponent == this) contextHelpLabel.setText ({}, juce::dontSendNotification);
+    if (e.eventComponent == this)
+        contextHelpLabel.setText (kDefaultHint, juce::dontSendNotification);
+}
+
+void EditorContent::setZoomDisplay (float scale)
+{
+    const int pct = juce::roundToInt (scale * 100.0f);
+    for (int i = 0; i < zoomBox.getNumItems(); ++i)
+        if (kZoomPercents[i] == pct)
+        {
+            zoomBox.setSelectedId (zoomBox.getItemId (i), juce::dontSendNotification);
+            return;
+        }
+    zoomBox.setTextWhenNothingSelected (juce::String (pct) + "%");
+    zoomBox.setSelectedId (0, juce::dontSendNotification);
 }
 
 //==============================================================================
-void VarispeedDelayEditor::timerCallback()
+void EditorContent::timerCallback()
 {
-    repView.refresh();
     updateFooter();
+    updateReadouts();
     updateDynamicHelp();
     updateSpeedPresets();
-
-    const bool sync = proc.getAPVTS().getRawParameterValue (pid::timeSync)->load() > 0.5f;
-    const bool bend = proc.getAPVTS().getRawParameterValue (pid::timeMode)->load() > 0.5f;
-    const bool clip = proc.getAPVTS().getRawParameterValue (pid::clipOn)->load() > 0.5f;
-    divBox.setEnabled (sync);
-    clipThreshKnob->slider.setEnabled (clip);
-    clipThreshKnob->setLed (proc.getEngine().isClipping());
-
-    if (sync)
-    {
-        const int d = (int) proc.getAPVTS().getRawParameterValue (pid::timeDiv)->load();
-        timeKnob->setValueOverride (juce::String (division (d).name) + "  "
-                                    + juce::String (proc.getEngine().getPeriodMs(), 0) + " ms");
-    }
-    else if (bend)
-    {
-        timeKnob->setValueOverride (msText (proc.getEngine().getEffectiveTimeMs()));
-    }
-    else
-    {
-        // the engine floors the period at one buffer — show that rather than the knob's lie
-        const double minMs = proc.getEngine().getMinPeriodMs();
-        const double asked = proc.getAPVTS().getRawParameterValue (pid::timeMs)->load();
-        timeKnob->setValueOverride (asked < minMs - 0.01 ? msText (minMs) : juce::String());
-    }
-    timeKnob->slider.setEnabled (! sync);
 }
 
-void VarispeedDelayEditor::updateSpeedPresets()
+void EditorContent::updateReadouts()
+{
+    auto& s = proc.getAPVTS();
+    auto& engine = proc.getEngine();
+
+    const bool wasSync = syncOn;
+    syncOn   = s.getRawParameterValue (pid::timeSync)->load() > 0.5f;
+    divIndex = (int) s.getRawParameterValue (pid::timeDiv)->load();
+    eqOn     = s.getRawParameterValue (pid::eqOn)->load() > 0.5f;
+    clipLit  = engine.isClipping();
+    bpm      = engine.getBpm();
+    periodMs = engine.getPeriodMs();
+
+    const bool clipOn = s.getRawParameterValue (pid::clipOn)->load() > 0.5f;
+
+    divBox.setEnabled (syncOn);
+    timeField->setActive (! syncOn);
+    // the sync knob reads the tempo, so a tempo change has to move it; leaving sync hands
+    // the knob back to the millisecond parameter
+    if (syncOn && ! draggingTime)   setTimeKnobValue (divisionMs (divIndex));
+    else if (wasSync && ! syncOn)   setTimeKnobValue (s.getRawParameterValue (pid::timeMs)->load());
+    clipKnob->setEnabled (clipOn);
+    clipKnob->getProperties().set ("alert", clipLit);
+    clipField->setActive (clipOn);
+
+    // the target, so the readout tracks the knob instantly - what the engine is actually
+    // running, glide and buffer floor included, is the period line under the knob
+    const double shownMs = syncOn ? divisionMs (divIndex)
+                                  : (double) s.getRawParameterValue (pid::timeMs)->load();
+    const auto parts = msParts (shownMs);
+    timeField->setDisplay (parts.first, parts.second);
+    timeField->setNumberColour (juce::Colour (syncOn ? col::dim : col::text));
+
+    speedShown = s.getRawParameterValue (pid::speed)->load();
+    speedField->setDisplay (juce::String (speedShown, 3), "x");
+
+    eqPeakDb = 0.0f;
+    eqPeakBand = 0;
+    for (int i = 0; i < kNumEqBands; ++i)
+    {
+        const float db = s.getRawParameterValue (pid::eqBand (i))->load();
+        if (db > eqPeakDb) { eqPeakDb = db; eqPeakBand = i; }
+        eqFields[i]->setDisplay (signedDb (db), {});
+        eqFields[i]->setNumberColour (juce::Colour (std::abs (db) > 0.05f ? col::text : col::dim));
+    }
+
+    const float feedback = s.getRawParameterValue (pid::feedback)->load();
+    const float eqGain = eqOn ? juce::Decibels::decibelsToGain (eqPeakDb) : 1.0f;
+    loopGain = feedback * eqGain;
+    safeFeedback = 1.0f / juce::jmax (1.0e-3f, eqGain);
+
+    const auto& fbRange = proc.getAPVTS().getParameter (pid::feedback)->getNormalisableRange();
+    feedbackKnob->getProperties().set ("split",
+        fbRange.convertTo0to1 (juce::jlimit (fbRange.start, fbRange.end, safeFeedback)));
+    feedbackField->setDisplay (juce::String (feedback, 2), {});
+    feedbackField->setNumberColour (juce::Colour (loopGain >= 1.0 ? col::warn : col::text));
+
+    clipField->setDisplay (juce::String (s.getRawParameterValue (pid::clipThr)->load(), 1), "dB");
+    dryField->setDisplay (juce::String (s.getRawParameterValue (pid::dry)->load(), 2), {});
+    wetField->setDisplay (juce::String (s.getRawParameterValue (pid::wet)->load(), 2), {});
+
+    const auto now = std::make_tuple (bpm, periodMs, loopGain, speedShown, safeFeedback, eqPeakDb,
+                                      eqPeakBand, divIndex, syncOn, eqOn, clipLit);
+    if (now != painted) { painted = now; repaint(); }
+}
+
+void EditorContent::updateSpeedPresets()
 {
     const float speed = proc.getAPVTS().getRawParameterValue (pid::speed)->load();
     for (int i = 0; i < speedPresets.size(); ++i)
@@ -544,11 +952,10 @@ void VarispeedDelayEditor::updateSpeedPresets()
     }
 }
 
-void VarispeedDelayEditor::updateDynamicHelp()
+void EditorContent::updateDynamicHelp()
 {
     auto& e = proc.getEngine();
     const int voices = e.getActiveVoices();
-    const double periodMs = e.getPeriodMs();
     const double repMs = e.getRepetitionMs();
 
     // TAPE runs the grid away from the knob until it bottoms out here, so test the period
@@ -556,43 +963,31 @@ void VarispeedDelayEditor::updateDynamicHelp()
     const double minMs = e.getMinPeriodMs();
     const bool floored = periodMs < minMs + 0.01;
 
-    setHelp (*timeKnob, "Delay time - " + msText (periodMs) + " period, repetition lasts "
+    setHelp (*timeKnob, juce::String (syncOn ? "Note division - " : "Delay time - ")
+                        + msText (periodMs) + " period, repetition lasts "
                         + msText (repMs) + ", " + juce::String (voices) + " sounding"
                         + (floored ? ". Floored at the " + msText (minMs) + " audio buffer"
                                    : juce::String()));
     setHelp (*speedKnob, "Tape speed - repetition lasts " + msText (repMs)
                          + " on a " + msText (periodMs) + " grid; below 1x repeats overlap");
+    setHelp (*feedbackKnob, "Recycle gain - loop gain " + juce::String (loopGain, 2) + "x"
+                            + (loopGain >= 1.0 ? ", the tail grows without end"
+                                               : ", the tail decays"));
 }
 
-void VarispeedDelayEditor::layoutFooter()
-{
-    auto fa = footerArea.reduced (10, 2);
-    helpButton.setBounds (fa.removeFromLeft (20));
-    fa.removeFromLeft (4);
-
-    // give the version block exactly what it needs and hand the rest to the help text,
-    // which is the part that actually has something to say
-    const auto font = footerLabel.getFont();
-    const int needed = juce::GlyphArrangement::getStringWidthInt (font, footerLabel.getText()) + 6;
-    const int forFooter = juce::jlimit (0, juce::jmax (0, fa.getWidth() - 120), needed);
-
-    footerLabel.setBounds (fa.removeFromRight (forFooter));
-    contextHelpLabel.setBounds (fa);
-}
-
-void VarispeedDelayEditor::updateFooter()
+void EditorContent::updateFooter()
 {
     const double sr = proc.getSampleRate();
     const int blockSize = proc.getBlockSize();
 
     juce::String text;
     text << juce::String (sr, 0) << " Hz | " << blockSize << " smp";
-    if (sr > 0.0) text << " | ~" << juce::String (blockSize * 1000.0 / sr, 1) << " ms";
+    if (sr > 0.0) text << " | " << juce::String (blockSize * 1000.0 / sr, 1) << " ms";
 
 #if JucePlugin_Build_Standalone
     if (auto* holder = juce::StandalonePluginHolder::getInstance())
         if (auto* device = holder->deviceManager.getCurrentAudioDevice())
-            text << " | In: " << device->getName() << " | Out: " << device->getName();
+            text << " | " << device->getName();
 #endif
 
     text << " | v" << JucePlugin_VersionString << " (" << VARISPEEDDELAY_BUILD_DATE << ")";
@@ -602,4 +997,37 @@ void VarispeedDelayEditor::updateFooter()
         footerLabel.setText (text, juce::dontSendNotification);
         layoutFooter();
     }
+}
+
+//==============================================================================
+VarispeedDelayEditor::VarispeedDelayEditor (VarispeedDelayProcessor& p)
+    : AudioProcessorEditor (&p), content (p)
+{
+    setLookAndFeel (&lnf);
+    addAndMakeVisible (content);
+
+    content.onZoomRequest = [this] (float z)
+    {
+        setSize (juce::roundToInt ((float) kDesignW * z), juce::roundToInt ((float) kDesignH * z));
+    };
+
+    setResizable (true, true);
+    setResizeLimits (kDesignW / 2, kDesignH / 2, kDesignW * 2, kDesignH * 2);
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio ((double) kDesignW / (double) kDesignH);
+
+    setSize (kDesignW, kDesignH);
+}
+
+VarispeedDelayEditor::~VarispeedDelayEditor()
+{
+    setLookAndFeel (nullptr);
+}
+
+void VarispeedDelayEditor::resized()
+{
+    const float scale = (float) getWidth() / (float) kDesignW;
+    content.setBounds (0, 0, kDesignW, kDesignH);
+    content.setTransform (juce::AffineTransform::scale (scale));
+    content.setZoomDisplay (scale);
 }

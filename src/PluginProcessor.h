@@ -55,8 +55,8 @@ public:
     vspd::DelayEngine& getEngine() { return engine; }
     PresetManager& getPresets() { return presets; }
 
-    void setFallbackBpm (double bpm) { fallbackBpm = bpm; }
-    double getFallbackBpm() const { return fallbackBpm; }
+    void setFallbackBpm (double bpm) { fallbackBpm.store (bpm); }
+    double getFallbackBpm() const { return fallbackBpm.load(); }
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
@@ -83,7 +83,7 @@ private:
     std::atomic<float>* pDry = nullptr;
     std::atomic<float>* pWet = nullptr;
 
-    double fallbackBpm = 120.0;
+    std::atomic<double> fallbackBpm { 120.0 };
     int currentProgram = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VarispeedDelayProcessor)

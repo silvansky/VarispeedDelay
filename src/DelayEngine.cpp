@@ -130,6 +130,7 @@ void DelayEngine::updateTiming (int numSamples)
     const bool wantSync = settings.sync;
     const bool transportRunning = transport.valid && transport.playing;
     const double bpm = (transport.valid && transport.bpm > 1.0) ? transport.bpm : fallbackBpm;
+    uiBpm.store (bpm, std::memory_order_relaxed);
 
     const Division& d = division (settings.divIndex);
     double quarters = d.quarters;

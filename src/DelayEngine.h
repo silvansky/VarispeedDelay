@@ -91,6 +91,8 @@ public:
     double getPeriodMs()     const noexcept { return uiPeriodMs.load (std::memory_order_relaxed); }
     double getEffectiveTimeMs() const noexcept { return uiEffTimeMs.load (std::memory_order_relaxed); }
     double getRepetitionMs() const noexcept { return uiRepMs.load (std::memory_order_relaxed); }
+    /** The tempo the sync grid is using: the host's when it has one, else the tapped fallback. */
+    double getBpm()          const noexcept { return uiBpm.load (std::memory_order_relaxed); }
     int    getActiveVoices() const noexcept { return uiVoices.load (std::memory_order_relaxed); }
     bool   isClipping()      const noexcept { return uiClipping.load (std::memory_order_relaxed); }
     int    getVoiceSnapshot (VoiceInfo* dest, int maxCount) const;
@@ -177,6 +179,7 @@ private:
     std::atomic<double> uiPeriodMs { 500.0 };
     std::atomic<double> uiEffTimeMs { 500.0 };
     std::atomic<double> uiRepMs { 500.0 };
+    std::atomic<double> uiBpm { 120.0 };
     std::atomic<int>    uiVoices { 0 };
     std::atomic<bool>   uiClipping { false };
     std::atomic<float>  uiVoiceElapsed[kMaxVoices] {};
