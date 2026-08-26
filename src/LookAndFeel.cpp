@@ -61,10 +61,7 @@ namespace
 {
 void fillKnobFace (juce::Graphics& g, juce::Point<float> centre, float radius)
 {
-    const float fx = centre.x - radius * 0.24f;
-    const float fy = centre.y - radius * 0.40f;
-    g.setGradientFill (juce::ColourGradient (juce::Colour (col::knobTop), fx, fy,
-                                             juce::Colour (col::knobBot), fx + radius * 1.4f, fy, true));
+    g.setColour (juce::Colour (col::knobFace));
     g.fillEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
     g.setColour (juce::Colour (col::knobEdge));
     g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.0f);

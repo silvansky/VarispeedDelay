@@ -70,6 +70,7 @@ public:
     void setMono (bool);
     void setActive (bool);
     void paint (juce::Graphics&) override;
+    void editorShown (juce::TextEditor*) override;
 
     /** Replaces the default "parse with the parameter" behaviour. */
     std::function<void (const juce::String&)> onEdit;
@@ -102,7 +103,7 @@ private:
     void timerCallback() override;
     void buildControls();
     void updateFooter();
-    void layoutFooter();
+    void setStatus (const juce::String& help, bool withTechInfo = false);
     void updateReadouts();
     void updateDynamicHelp();
     void updateSpeedPresets();
@@ -140,7 +141,8 @@ private:
     juce::OwnedArray<ParamSlider> eqSliders;
     juce::OwnedArray<ValueField> eqFields;
 
-    juce::Label helpMark, contextHelpLabel, footerLabel;
+    juce::Label helpMark, contextHelpLabel;
+    juce::String techInfo;
     juce::ComboBox zoomBox;
 
     juce::ComboBox presetBox;

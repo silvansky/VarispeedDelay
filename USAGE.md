@@ -23,7 +23,8 @@ instead of being cut short.
 | **GRAPHIC EQ, OFF / ON** | ±12 dB at 63, 160, 400, 1k, 2.5k, 6.3k, 16k, applied once per repetition. The sliders stay live while the EQ is off, so a curve can be dialled in before switching it in. |
 | **Dry / Wet** | Output mix. Wet is the trim for overlapping repetitions. |
 
-Hover any control for a one-line description in the footer.
+Hover any control for a one-line description in the footer. Hover the `?` at the
+bottom right for the sample rate, block size, audio device and build.
 
 Click any value to type it. The delay time takes milliseconds, or seconds with an `s`
 suffix; the speed takes a ratio like `1.5` or semitones written `+7s` / `-1.5s`. Hold

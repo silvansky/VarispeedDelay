@@ -40,7 +40,8 @@ Names are the constants in `vspd::col` (`src/LookAndFeel.h`). Nothing outside
 | `text` | `#EEF4F8` | value readouts |
 | `mid` | `#A7BAC9` | captions, unlit chip labels, the product name |
 | `dim` | `#7F93A5` | secondary readouts, footer, axis labels, inactive values |
-| `knobTop` / `knobBot` | `#5A7189` / `#374A5D` | knob and thumb face gradient |
+| `knobFace` | `#485D73` | knob face |
+| `knobTop` / `knobBot` | `#5A7189` / `#374A5D` | slider thumb face gradient |
 | `knobEdge` | `#22303E` | 1 px ring around a knob face or thumb |
 | `pointer` | `#E2ECF3` | knob pointer, thumb centre line |
 
@@ -48,6 +49,11 @@ Colour carries meaning, so do not decorate with it: **green is a value or an act
 state, cyan is a section title, red is a warning about the signal.** A control that is
 merely selected uses `accent`; a control that is telling you something is wrong uses
 `warn`.
+
+**Fills are flat.** Do not add a gradient to anything unless it is explicitly asked for.
+The slider thumb is the one that exists, kept because it is small enough to read as a
+bevel rather than as shading. Depth comes from the flat face plus its 1 px `knobEdge`
+ring, not from a light source.
 
 ## Type
 
@@ -82,8 +88,7 @@ A knob is a `ParamSlider` in `RotaryHorizontalVerticalDrag`, drawn by
 
 Anatomy, outward from the centre:
 
-- **face** — radius `0.77 * arcR`, radial gradient `knobTop → knobBot` offset up and left,
-  1 px `knobEdge` ring.
+- **face** — radius `0.77 * arcR`, flat `knobFace`, 1 px `knobEdge` ring.
 - **pointer** — `pointer`, 2 px, rounded, from `0.22` to `0.86` of the face radius.
 - **arc** — radius `arcR`, `kKnobArcThickness` (3.5 px). `track` for the whole sweep, then
   the value in `accent` over it.
@@ -129,7 +134,7 @@ A switch group under a knob is **centred on the knob's centre**, not on its own 
 
 Vertical only. 3 px `track`, filled in `accent`; the fill starts at the centre when the
 range is bipolar (EQ bands) and at the bottom when it is not (dry, wet). The thumb is
-18 x 7, radius 2, knob-face gradient, `knobEdge` border, `pointer` centre line at 70 %.
+18 x 7, radius 2, `knobTop → knobBot` gradient, `knobEdge` border, `pointer` centre line at 70 %.
 
 The EQ is a 7-band comb at `x = 52 + 48i`: value field at `y = 300`, slider `(cx-10, 318,
 20, 84)`, frequency label baseline 418, zero line across `y = 360`, `dB` / `Hz` axis
@@ -158,6 +163,10 @@ Uniform across every control, and advertised in the footer when nothing is hover
 - **double-click to reset** to the parameter default
 - **hover for help** — `mouseEnter` walks up from the hovered component looking for a
   `"help"` property, so a child inherits its parent's text. Every control sets one.
+
+The footer is one left-aligned status line, never two. It shows the standing hint, or the
+hovered control's help, or - over the `?` only - that help followed by the technical
+readout (rate, block, device, version, build).
 
 ## Painting
 

@@ -18,6 +18,7 @@ inline constexpr juce::uint32 text       = 0xffeef4f8;
 inline constexpr juce::uint32 mid        = 0xffa7bac9;
 inline constexpr juce::uint32 dim        = 0xff7f93a5;
 inline constexpr juce::uint32 track      = 0xff26323f;
+inline constexpr juce::uint32 knobFace   = 0xff485d73;
 inline constexpr juce::uint32 knobTop    = 0xff5a7189;
 inline constexpr juce::uint32 knobBot    = 0xff374a5d;
 inline constexpr juce::uint32 knobEdge   = 0xff22303e;

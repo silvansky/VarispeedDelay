@@ -265,6 +265,19 @@ void ValueField::setActive (bool active)
     repaint();
 }
 
+void ValueField::editorShown (juce::TextEditor* ed)
+{
+    // the default label editor font is 15 px, which overflows the shorter fields
+    auto f = mono ? monoFont (numPt) : uiFont (numPt);
+    const float maxH = (float) getHeight() - 2.0f;
+    if (f.getHeight() > maxH) f = f.withHeight (maxH);
+
+    ed->setBorder ({ 1, 1, 1, 1 });
+    ed->setIndents (2, juce::roundToInt (((float) getHeight() - 2.0f - f.getHeight()) * 0.5f));
+    ed->setJustification (juce::Justification::centred);
+    ed->applyFontToAllText (f);
+}
+
 void ValueField::paint (juce::Graphics& g)
 {
     if (isBeingEdited()) return;   // the text editor carries the design's boxed treatment
@@ -455,19 +468,11 @@ void EditorContent::buildControls()
     contextHelpLabel.setBorderSize ({});
     contextHelpLabel.setFont (monoFont (8.0f));
     contextHelpLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
-    contextHelpLabel.setJustificationType (juce::Justification::centred);
+    contextHelpLabel.setJustificationType (juce::Justification::centredLeft);
     contextHelpLabel.setMinimumHorizontalScale (0.8f);
     contextHelpLabel.setInterceptsMouseClicks (false, false);
     contextHelpLabel.setText (kDefaultHint, juce::dontSendNotification);
     addAndMakeVisible (contextHelpLabel);
-
-    footerLabel.setBorderSize ({});   // the default 5 px inset would clip the build date
-    footerLabel.setFont (monoFont (8.0f));
-    footerLabel.setColour (juce::Label::textColourId, juce::Colour (col::dim).withAlpha (0.8f));
-    footerLabel.setJustificationType (juce::Justification::centredLeft);
-    footerLabel.setMinimumHorizontalScale (1.0f);
-    footerLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (footerLabel);
 
     for (int i = 0; i < (int) std::size (kZoomPercents); ++i)
         zoomBox.addItem (juce::String (kZoomPercents[i]) + "%", i + 1);
@@ -698,7 +703,7 @@ void EditorContent::resized()
     for (int i = 0; i < kNumEqBands; ++i)
     {
         const int cx = 52 + 48 * i;
-        eqFields[i]->setBounds (cx - 22, 300, 44, 12);
+        eqFields[i]->setBounds (cx - 24, 297, 48, 18);   // taller than the glyphs so the editor fits
         eqSliders[i]->setBounds (cx - 10, 318, 20, 84);
     }
 
@@ -714,22 +719,17 @@ void EditorContent::resized()
     // ---- footer -----------------------------------------------------------
     zoomBox.setBounds (690, 476, 58, 18);
     helpMark.setBounds (752, 476, 16, 18);
-    layoutFooter();
+    contextHelpLabel.setBounds (20, 476, 660, 18);
 }
 
-void EditorContent::layoutFooter()
+// the status line carries one message at a time: the standing hint, the hovered control's
+// help, or - over the "?" - that help plus the technical readout
+void EditorContent::setStatus (const juce::String& help, bool withTechInfo)
 {
-    auto fa = juce::Rectangle<int> (20, 476, 660, 18);
-
-    // give the version block exactly what it needs and hand the rest to the help text,
-    // which is the part that actually has something to say
-    const int needed = juce::GlyphArrangement::getStringWidthInt (footerLabel.getFont(),
-                                                                 footerLabel.getText()) + 6;
-    const int forFooter = juce::jlimit (0, juce::jmax (0, fa.getWidth() - 200), needed);
-
-    footerLabel.setBounds (fa.removeFromLeft (forFooter));
-    fa.removeFromLeft (10);
-    contextHelpLabel.setBounds (fa);
+    auto text = help.isNotEmpty() ? help : juce::String (kDefaultHint);
+    if (withTechInfo) text << "  |  " << techInfo;
+    if (contextHelpLabel.getText() != text)
+        contextHelpLabel.setText (text, juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -838,18 +838,20 @@ void EditorContent::mouseEnter (const juce::MouseEvent& e)
     // walk up from the hovered component so a child inherits its panel's help; fall back to
     // the standing hint when nothing in the chain carries one
     juce::String help;
+    auto* source = e.eventComponent;
     for (auto* c = e.eventComponent; c != nullptr; c = c->getParentComponent())
     {
         help = c->getProperties()["help"].toString();
+        source = c;
         if (help.isNotEmpty() || c == this) break;
     }
-    contextHelpLabel.setText (help.isNotEmpty() ? help : kDefaultHint, juce::dontSendNotification);
+    setStatus (help, source == &helpMark);
 }
 
 void EditorContent::mouseExit (const juce::MouseEvent& e)
 {
     if (e.eventComponent == this)
-        contextHelpLabel.setText (kDefaultHint, juce::dontSendNotification);
+        setStatus ({});
 }
 
 void EditorContent::setZoomDisplay (float scale)
@@ -992,10 +994,11 @@ void EditorContent::updateFooter()
 
     text << " | v" << JucePlugin_VersionString << " (" << VARISPEEDDELAY_BUILD_DATE << ")";
 
-    if (footerLabel.getText() != text)
+    if (techInfo != text)
     {
-        footerLabel.setText (text, juce::dontSendNotification);
-        layoutFooter();
+        techInfo = text;
+        if (helpMark.isMouseOver (true))
+            setStatus (helpMark.getProperties()["help"].toString(), true);
     }
 }
 
