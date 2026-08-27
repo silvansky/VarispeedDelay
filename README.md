@@ -1,6 +1,7 @@
 # Varispeed Delay
 
 [![build](https://github.com/silvansky/VarispeedDelay/actions/workflows/build.yml/badge.svg)](https://github.com/silvansky/VarispeedDelay/actions/workflows/build.yml)
+[![KVR](https://img.shields.io/badge/KVR-VarispeedDelay-e07b39)](https://www.kvraudio.com/product/varispeeddelay-by-valentine-silvansky)
 
 JUCE audio plugin (VST3 / AU / Standalone): a delay where every repetition is replayed at
 a different tape speed — pitch and duration change together.
