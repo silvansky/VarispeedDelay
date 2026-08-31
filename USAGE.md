@@ -102,6 +102,11 @@ floor, the BEND glide and the TAPE grid all show up there, and only there.
   period is up, and the wet bus is silent until the next one starts.
 - **Truncation at extreme slow settings.** A repetition is capped at 4× the delay time (or
   20 s). At 0.25× the first repeat is never truncated; later generations are, with a fade.
+- **The transport clears the delay.** Starting playback, rewinding, locating, or wrapping
+  a cycle drops every buffer and voice, so each pass of a loop and each take of a recording
+  sound identical. The engine watches the host's timeline position, so it works with sync
+  off and in hosts with no tempo. Stopping does *not* clear anything — the tail rings out,
+  and it is the next start that kills it, ramped out over 2 ms so the cut is not a click.
 - **Reported tail length is a bound, not a decay estimate.** It is ten generations of the
   longest repetition the current settings allow. With feedback ≥ 1 the true tail is
   infinite, so a host that honours the number will truncate a long feedback wash on an

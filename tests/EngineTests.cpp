@@ -913,6 +913,90 @@ void testMinimumPeriodIsOneBuffer()
     }
 }
 
+void testTransportRestartClearsState()
+{
+    // Replays the same take twice on one engine and once on a fresh one: a stop/rewind and
+    // a cycle wrap both have to sound like the fresh start.
+    auto signal = [] (int i) { return i % 977 == 0 ? 0.8f : (i % 311 == 0 ? -0.5f : 0.0f); };
+
+    auto play = [&] (DelayEngine& e, double startSec, int total, std::vector<float>& out, bool running)
+    {
+        juce::AudioBuffer<float> buf (2, kBlock);
+        DelayEngine::Transport t;
+        t.valid = true;
+        t.running = running;
+        t.playing = running;
+        t.timeValid = true;
+        for (int done = 0; done < total; done += kBlock)
+        {
+            const int nb = juce::jmin (kBlock, total - done);
+            buf.setSize (2, nb, false, false, true);
+            for (int i = 0; i < nb; ++i)
+            {
+                const float x = running ? signal (done + i) : 0.0f;
+                buf.setSample (0, i, x);
+                buf.setSample (1, i, x);
+            }
+            t.timeSec = startSec + done / kSr;
+            e.setTransport (t);
+            e.process (buf);
+            for (int i = 0; i < nb; ++i) out.push_back (buf.getSample (0, i));
+        }
+    };
+
+    DelayEngine::Settings s;
+    s.dry = 0.0f;
+    s.wet = 1.0f;
+    s.feedback = 0.7f;
+    s.speed = 1.5;
+    s.timeMs = 120.0;
+
+    const int pass = (int) (kSr * 1.5);
+
+    DelayEngine fresh;
+    fresh.setSettings (s);
+    fresh.prepare (kSr, kBlock, 2);
+    std::vector<float> first;
+    play (fresh, 0.0, pass, first, true);
+
+    DelayEngine looped;
+    looped.setSettings (s);
+    looped.prepare (kSr, kBlock, 2);
+    std::vector<float> warm, second, third;
+    play (looped, 0.0, pass, warm, true);      // first pass of the cycle
+    play (looped, 0.0, pass, second, true);    // wrap back to the loop start
+    play (looped, 0.0, kBlock * 4, third, false);  // stopped: transport off
+    third.clear();
+    play (looped, 0.0, pass, third, true);     // stop / rewind / play
+
+    const int skip = (int) (kResetDeclickMs * 0.001 * kSr) + 8;   // past the declick ramp
+    float wrapErr = 0.0f, restartErr = 0.0f;
+    for (int i = skip; i < pass; ++i)
+    {
+        wrapErr = juce::jmax (wrapErr, std::abs (second[(size_t) i] - first[(size_t) i]));
+        restartErr = juce::jmax (restartErr, std::abs (third[(size_t) i] - first[(size_t) i]));
+    }
+    check (wrapErr == 0.0f, "cycle wrap replays the first pass exactly");
+    check (restartErr == 0.0f, "stop / rewind / play replays the first pass exactly");
+
+    float declickPeak = 0.0f, warmPeak = 0.0f;
+    for (int i = 0; i < skip; ++i) declickPeak = juce::jmax (declickPeak, std::abs (second[(size_t) i]));
+    for (int i = pass - 1000; i < pass; ++i) warmPeak = juce::jmax (warmPeak, std::abs (warm[(size_t) i]));
+    check (declickPeak <= warmPeak + 1.0e-5f, "the killed tail ramps out, it does not jump");
+
+    // A continuous timeline must not be mistaken for a jump.
+    DelayEngine straight;
+    straight.setSettings (s);
+    straight.prepare (kSr, kBlock, 2);
+    std::vector<float> a, b;
+    play (straight, 0.0, pass, a, true);
+    play (straight, pass / kSr, pass, b, true);
+    bool differs = false;
+    for (int i = 0; i < pass; ++i) differs = differs || std::abs (b[(size_t) i] - a[(size_t) i]) > 1.0e-6f;
+    check (differs, "no reset while the transport runs on");
+}
+
+
 void testMonoAndBlockSizes()
 {
     for (int nch : { 1, 2 })
@@ -976,6 +1060,7 @@ int main()
     test ("TAPE replays its whole window", testTapeReplaysWholeWindow);
     test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
+    test ("transport restart and cycle wrap replay identically", testTransportRestartClearsState);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -73,6 +73,10 @@ void DelayEngine::prepare (double sampleRate, int maxBlockSize, int nch)
     drySm.reset (sr, 0.02);
     wetSm.reset (sr, 0.02);
 
+    wasRunning = false;
+    posValid = false;
+    expectedTimeSec = 0.0;
+
     reset();
 }
 
@@ -88,6 +92,8 @@ void DelayEngine::reset()
     peakVoices = 0;
     clipHold = 0;
     overrun = false;
+    declickLeft = 0;
+    for (auto& v : lastWetOut) v = 0.0f;
 
     tLatched = juce::jlimit ((double) minPeriod, (double) maxLen, settings.timeMs * 0.001 * sr);
     tTarget = tEff = tLatched;
@@ -114,6 +120,37 @@ void DelayEngine::reset()
 
     updateTail();
     publishUi();
+}
+
+//==============================================================================
+/** A host restart has to sound like a fresh start: stop/rewind/play and every pass of a
+    cycle must replay identically, so the engine drops its buffers whenever the transport
+    starts or the timeline jumps. Position is read in seconds, not ppq, so it works in
+    hosts with no tempo and while sync is off. */
+bool DelayEngine::transportRestarted (int numSamples)
+{
+    const bool running = transport.valid && transport.running;
+    bool restart = false;
+
+    if (running)
+    {
+        // one block start is never more than a few samples from where the last one ended
+        const double tol = std::max (1.0e-4, 4.0 / sr);
+        if (! wasRunning)
+            restart = true;
+        else if (posValid && transport.timeValid && std::abs (transport.timeSec - expectedTimeSec) > tol)
+            restart = true;
+
+        expectedTimeSec = transport.timeSec + numSamples / sr;
+        posValid = transport.timeValid;
+    }
+    else
+    {
+        posValid = false;
+    }
+
+    wasRunning = running;
+    return restart;
 }
 
 void DelayEngine::updateTail()
@@ -385,6 +422,17 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
     const int nch = juce::jmin (numChannels, buffer.getNumChannels());
     if (nch <= 0) return;
 
+    if (transportRestarted (ns))
+    {
+        // The ramp is added to the output only, never to a generation buffer, so the delay
+        // content after a restart is identical every pass.
+        float held[2] { lastWetOut[0], lastWetOut[1] };
+        reset();
+        declickLen = juce::jmax (1, (int) (kResetDeclickMs * 0.001 * sr));
+        declickLeft = declickLen;
+        for (int ch = 0; ch < 2; ++ch) declickVal[ch] = held[ch];
+    }
+
     updateTiming (ns);
 
     for (int b = 0; b < kNumEqBands; ++b) eq.setGainDb (b, settings.eqDb[b]);
@@ -600,7 +648,17 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         }
 
         for (int ch = 0; ch < nch; ++ch)
-            out[ch][i] = x[ch] * dryG + wetSum[ch] * wetG;
+        {
+            lastWetOut[ch] = wetSum[ch] * wetG;
+            out[ch][i] = x[ch] * dryG + lastWetOut[ch];
+        }
+
+        if (declickLeft > 0)
+        {
+            const float g = (float) raisedCos ((double) declickLeft / declickLen);
+            for (int ch = 0; ch < nch; ++ch) out[ch][i] += declickVal[ch] * g;
+            --declickLeft;
+        }
 
         ++n;
     }

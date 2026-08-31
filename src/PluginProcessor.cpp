@@ -178,12 +178,23 @@ void VarispeedDelayProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             t.valid   = true;
             t.playing = pos->getIsPlaying();
+            t.running = pos->getIsPlaying();
             t.bpm     = pos->getBpm().orFallback (fallbackBpm.load());
             t.ppq     = pos->getPpqPosition().orFallback (0.0);
             if (auto sig = pos->getTimeSignature())
             {
                 t.tsNum = sig->numerator;
                 t.tsDen = sig->denominator;
+            }
+            if (auto samples = pos->getTimeInSamples())
+            {
+                t.timeSec = (double) *samples / juce::jmax (1.0, getSampleRate());
+                t.timeValid = true;
+            }
+            else if (auto secs = pos->getTimeInSeconds())
+            {
+                t.timeSec = *secs;
+                t.timeValid = true;
             }
             if (! pos->getPpqPosition().hasValue()) t.playing = false;
         }

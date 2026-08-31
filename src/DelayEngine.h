@@ -33,6 +33,7 @@ inline constexpr double kXfadeMaxMs      = 8.0;
 inline constexpr double kTailGenerations = 10.0;
 inline constexpr double kUnityEpsilon    = 1.0e-4;
 inline constexpr double kClipHoldMs      = 120.0;   // so a 30 Hz UI cannot miss a hit
+inline constexpr double kResetDeclickMs  = 2.0;    // ramp of the killed tail, output only
 
 enum class TimeMode { Regrid = 0, Bend };
 enum class Spacing  { Grid = 0, Tape };
@@ -67,11 +68,14 @@ public:
     struct Transport
     {
         bool   valid   = false;
-        bool   playing = false;
+        bool   playing = false;   // playing *and* carrying a ppq the sync grid can use
+        bool   running = false;   // the host's transport, whether or not it has a ppq
         double bpm     = 120.0;
         double ppq     = 0.0;
         int    tsNum   = 4;
         int    tsDen   = 4;
+        double timeSec = 0.0;     // timeline position of this block's first sample
+        bool   timeValid = false;
     };
 
     struct VoiceInfo { float elapsed = 0.0f, duration = 0.0f, env = 0.0f; };
@@ -122,6 +126,7 @@ private:
         void resetState() noexcept { inputLen = 0; written = 0; writer = -1; inputTaper = 0; }
     };
 
+    bool   transportRestarted (int numSamples);
     void   updateTiming (int numSamples);
     void   openGeneration (double rEff);
     void   retireVoice (int index);
@@ -165,6 +170,13 @@ private:
     bool   syncActive = false;
     double divPpq = 1.0, lastDivPpq = 1.0;
     double ppqPerSample = 0.0, ppqBlockStart = 0.0, expectedPpq = 0.0, nextBoundaryPpq = 0.0;
+
+    bool   wasRunning = false;
+    bool   posValid = false;
+    double expectedTimeSec = 0.0;
+    float  lastWetOut[2] {};
+    float  declickVal[2] {};
+    int    declickLeft = 0, declickLen = 0;
 
     int    clipHold = 0;
     bool   overrun = false;
