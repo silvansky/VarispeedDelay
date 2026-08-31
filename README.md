@@ -8,6 +8,8 @@ a different tape speed — pitch and duration change together.
 
 ![VarispeedDelay](docs/screenshot.png)
 
+[Demo video](https://youtu.be/MTJbedOc2To)
+
 - time knob, free (0.1 ms – 20 s, floored at the audio buffer) or tempo-synced (up to 2 bars),
   with tap tempo and a ring showing where each note division falls at the current tempo
 - speed knob 1/4x – 4x, with a 3x3 shortcut grid: octaves plus fourths and fifths
