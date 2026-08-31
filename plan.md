@@ -13,7 +13,7 @@ Phases 1–7 implemented; all three formats build warning-free and both test tar
 ```
 CMakeLists.txt              juce_add_plugin, code VSil/Vspd, C++20, 2 test targets
 cmake/BuildDate.{cmake,h.in}
-install-au.sh               ad-hoc sign + install to /Library + auval
+install-au.sh               ad-hoc sign + install (user scope, --system for /Library) + auval
 libs/JUCE                   submodule @ 501c0767 (8.0.12-4)
 src/DelayEngine.{h,cpp}     generation ring, voice pool, periods, fades, bend, sync, clip
 src/Voice.h                 per-voice state

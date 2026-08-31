@@ -9,7 +9,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release              # reconfigure after CMakeLists 
 
 Outputs: `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`
 Run: `open build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app`
-Install AU + auval: `./install-au.sh`
+Install AU + auval: `./install-au.sh` (user scope; `--system` needs sudo)
 Tests: `cd build && ctest --output-on-failure` (engine unit tests + preset/parameter tests)
 
 ## Architecture

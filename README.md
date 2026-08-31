@@ -38,7 +38,8 @@ ctest --output-on-failure          # engine + preset/parameter unit tests
 ```
 
 Artefacts land in `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`.
-`./install-au.sh` signs the AU, installs it and runs `auval`.
+`./install-au.sh` signs the AU, installs it to `~/Library/Audio/Plug-Ins/Components` and
+runs `auval`; `--system` installs to `/Library` instead and asks for sudo.
 
 CI builds and tests every push on macOS (universal, arm64 + x86_64) and Windows, and
 pushing a `v*` tag attaches the zipped VST3 / AU / Standalone builds to a release.
