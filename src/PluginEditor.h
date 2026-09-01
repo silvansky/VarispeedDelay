@@ -126,7 +126,8 @@ private:
     std::unique_ptr<ParamSlider> timeKnob, speedKnob, feedbackKnob, clipKnob, drySlider, wetSlider;
     std::unique_ptr<ValueField>  timeField, speedField, feedbackField, clipField, dryField, wetField;
     std::unique_ptr<ToggleChip>  syncChip;
-    std::unique_ptr<ChoiceSwitch> timeModeSwitch, spacingSwitch, fbTypeSwitch, clipSwitch, eqOnSwitch;
+    std::unique_ptr<ChoiceSwitch> timeModeSwitch, spacingSwitch, fbTypeSwitch, clipSwitch,
+                                  eqOnSwitch, directionSwitch;
 
     std::unique_ptr<juce::ParameterAttachment> timeMsAttachment, timeDivAttachment;
     bool draggingTime = false;

@@ -387,6 +387,7 @@ void EditorContent::buildControls()
     auto* pSync    = s.getParameter (pid::timeSync);
     auto* pMode    = s.getParameter (pid::timeMode);
     auto* pSpacing = s.getParameter (pid::spacing);
+    auto* pDir     = s.getParameter (pid::direction);
     auto* pFb      = s.getParameter (pid::fbType);
     auto* pClip    = s.getParameter (pid::clipOn);
     auto* pEq      = s.getParameter (pid::eqOn);
@@ -397,6 +398,9 @@ void EditorContent::buildControls()
         "REGRID snaps to the new time and leaves the tail alone. BEND bends everything sounding");
     spacingSwitch = std::make_unique<ChoiceSwitch> (*pSpacing, juce::StringArray { "GRID", "TAPE" },
         "GRID keeps repetitions on the delay grid. TAPE starts each one when the last ends");
+    directionSwitch = std::make_unique<ChoiceSwitch> (
+        *pDir, juce::StringArray { "FWD", "REV", "ALT" },
+        "FWD plays each repetition forward. REV plays every one backwards. ALT flips every other one");
     fbTypeSwitch = std::make_unique<ChoiceSwitch> (*pFb, juce::StringArray { "RAW", "STABLE" },
         "RAW: pitch compounds each repetition. STABLE: every repetition plays at the same speed");
     clipSwitch = std::make_unique<ChoiceSwitch> (*pClip, juce::StringArray { "NO CLIP", "CLIP" },
@@ -406,7 +410,7 @@ void EditorContent::buildControls()
 
     addAndMakeVisible (*syncChip);
     for (auto* c : { timeModeSwitch.get(), spacingSwitch.get(), fbTypeSwitch.get(),
-                     clipSwitch.get(), eqOnSwitch.get() })
+                     clipSwitch.get(), eqOnSwitch.get(), directionSwitch.get() })
         addAndMakeVisible (*c);
 
     setHelp (tapButton, "Tap a tempo - sets the delay time when free, the sync tempo when the "
@@ -692,6 +696,7 @@ void EditorContent::resized()
     for (int i = 0; i < speedPresets.size(); ++i)
         speedPresets[i]->setBounds (400 + (i % kSpeedGridCols) * 52,
                                     156 + (i / kSpeedGridCols) * 24, 48, 20);
+    directionSwitch->setBounds (400, 242, 152, 16);   // on the speed grid's columns
 
     // ---- FEEDBACK ---------------------------------------------------------
     feedbackField->setBounds (638, 96, 80, 20);

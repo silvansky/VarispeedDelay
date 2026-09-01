@@ -55,6 +55,10 @@ Engine invariants worth knowing before changing it:
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long
   as its source, so it outlives the audible tap at speeds above 1.
+- Direction changes only the audible tap; what the *recycle* tap reads is what decides
+  whether the buffer flips, and that is the whole difference between REV and ALT. Reverse
+  latches its source at the boundary, where the generation is always exactly `periodLen`
+  long, while forward reads `sourceLength` live. Reverse voices always fade both ends.
 
 ## UI
 
