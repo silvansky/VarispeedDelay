@@ -692,16 +692,16 @@ void EditorContent::resized()
 
     // ---- SPEED ------------------------------------------------------------
     speedField->setBounds (356, 96, 130, 26);
-    speedKnob->setBounds (301, 143, 94, 94);
+    speedKnob->setBounds (301, 135, 94, 94);
     for (int i = 0; i < speedPresets.size(); ++i)
         speedPresets[i]->setBounds (400 + (i % kSpeedGridCols) * 52,
-                                    156 + (i / kSpeedGridCols) * 24, 48, 20);
+                                    148 + (i / kSpeedGridCols) * 24, 48, 20);
     directionSwitch->setBounds (400, 242, 152, 16);   // on the speed grid's columns
 
     // ---- FEEDBACK ---------------------------------------------------------
     feedbackField->setBounds (638, 96, 80, 20);
-    feedbackKnob->setBounds (631, 129, 94, 94);
-    fbTypeSwitch->setBounds (620, 244, 116, 16);   // centred on the knob at 678
+    feedbackKnob->setBounds (631, 135, 94, 94);
+    fbTypeSwitch->setBounds (620, 242, 116, 16);   // centred on the knob at 678
 
     // ---- GRAPHIC EQ -------------------------------------------------------
     eqOnSwitch->setBounds (300, 276, 79, 16);
@@ -773,18 +773,18 @@ void EditorContent::paint (juce::Graphics& g)
     if (speedField->isBeingEdited())
         drawMono (g, "type  1.5  |  +7s  |  -1.5s", 421.0f, 134.0f, 7.5f, juce::Colour (col::dim));
     drawMono (g, juce::String (12.0 * std::log2 (juce::jmax (1.0e-6, speedShown)), 2) + " semitones",
-              348.0f, 234.0f, 7.0f, juce::Colour (col::dim));
+              348.0f, 230.0f, 7.0f, juce::Colour (col::dim));
 
     // ---- FEEDBACK ---------------------------------------------------------
     drawCaption (g, "Feedback", 678.0f, 92.0f);
     const bool runaway = loopGain >= 1.0;
     g.setColour (juce::Colour (runaway ? col::warn : col::dim));
     drawTrackedCentred (g, monoFont (9.5f).boldened(),
-                        "LOOP GAIN " + juce::String (loopGain, 2) + "x", 678.0f, 216.0f, 0.6f);
+                        "LOOP GAIN " + juce::String (loopGain, 2) + "x", 678.0f, 222.0f, 0.6f);
     if (eqOn && eqPeakDb > 0.05f)
         drawMono (g, "EQ " + signedDb (eqPeakDb) + " dB at " + bandLabel (GraphicEQ::bandFreq[eqPeakBand])
                      + " - safe below " + juce::String (safeFeedback, 2),
-                  678.0f, 230.0f, 7.0f, juce::Colour (col::dim));
+                  678.0f, 236.0f, 7.0f, juce::Colour (col::dim));
 
     // ---- GRAPHIC EQ -------------------------------------------------------
     g.setColour (juce::Colour (col::dim).withAlpha (0.22f));
