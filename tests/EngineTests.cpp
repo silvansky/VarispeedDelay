@@ -121,6 +121,23 @@ struct Rig
         return -1;
     }
 
+    int peakIndex (int from, int to) const
+    {
+        int best = -1;
+        float p = 0.0f;
+        for (int i = juce::jmax (0, from); i < juce::jmin ((int) left.size(), to); ++i)
+            if (std::abs (left[(size_t) i]) > p) { p = std::abs (left[(size_t) i]); best = i; }
+        return best;
+    }
+
+    double maxStep (int from, int to) const
+    {
+        double m = 0.0;
+        for (int i = juce::jmax (1, from); i < juce::jmin ((int) left.size(), to); ++i)
+            m = juce::jmax (m, (double) std::abs (left[(size_t) i] - left[(size_t) i - 1]));
+        return m;
+    }
+
     bool allFinite() const
     {
         for (float v : left) if (! std::isfinite (v)) return false;
@@ -817,6 +834,7 @@ void testNoAllocationInProcess()
         s.spacing  = (b % 11) == 0 ? Spacing::Tape : Spacing::Grid;
         s.timeMode = (b % 13) == 0 ? TimeMode::Bend : TimeMode::Regrid;
         s.fbType   = (b % 17) == 0 ? FbType::Stable : FbType::Raw;
+        s.direction = (Direction) (b % 3);
         for (auto& g : s.eqDb) g = (float) ((b % 5) - 2) * 3.0f;
         e.setSettings (s);
 
@@ -1029,6 +1047,163 @@ void testMonoAndBlockSizes()
         }
     }
 }
+
+//==============================================================================
+// An impulse at offset p inside the recorded period returns at offset T-1-p when the
+// repetition is reversed, and at p when it is not.
+constexpr int kRevT = 4800;   // 100 ms at 48 kHz
+constexpr int kRevP = kRevT / 4;
+
+void testReverseMirrorsTheRepetition()
+{
+    Rig r;
+    r.s.speed = 1.0;
+    r.s.feedback = 0.0f;
+    r.s.timeMs = 100.0;
+    r.s.direction = Direction::Reverse;
+    r.apply();
+
+    r.run (kRevT, [] (int i) { return i == kRevP ? 1.0f : 0.0f; });
+    r.runSilence (kRevT * 3);
+
+    const int hit = r.peakIndex (kRevT + 1, kRevT * 2);
+    check (hit >= 0, "reversed repetition present");
+    if (hit >= 0) checkNear (hit - kRevT, kRevT - 1 - kRevP, 2.0, "repetition 1 plays backwards");
+}
+
+void testReverseHoldsOrientation()
+{
+    for (auto fb : { FbType::Raw, FbType::Stable })
+    {
+        Rig r;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.clip = false;
+        r.s.fbType = fb;
+        r.s.timeMs = 100.0;
+        r.s.direction = Direction::Reverse;
+        r.apply();
+
+        r.run (kRevT, [] (int i) { return i == kRevP ? 1.0f : 0.0f; });
+        r.runSilence (kRevT * 4);
+
+        for (int k = 1; k <= 3; ++k)
+        {
+            const int hit = r.peakIndex (k * kRevT + 1, (k + 1) * kRevT);
+            check (hit >= 0, "repetition present");
+            if (hit >= 0)
+                checkNear (hit - k * kRevT, kRevT - 1 - kRevP, 3.0,
+                           "every reverse repetition stays mirrored");
+        }
+    }
+}
+
+void testAlternateFlipsEveryOtherRepetition()
+{
+    for (auto fb : { FbType::Raw, FbType::Stable })
+    {
+        Rig r;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.clip = false;
+        r.s.fbType = fb;
+        r.s.timeMs = 100.0;
+        r.s.direction = Direction::Alternate;
+        r.apply();
+
+        r.run (kRevT, [] (int i) { return i == kRevP ? 1.0f : 0.0f; });
+        r.runSilence (kRevT * 4);
+
+        for (int k = 1; k <= 3; ++k)
+        {
+            const int want = (k % 2) == 1 ? kRevT - 1 - kRevP : kRevP;
+            const int hit = r.peakIndex (k * kRevT + 1, (k + 1) * kRevT);
+            check (hit >= 0, "repetition present");
+            if (hit >= 0)
+                checkNear (hit - k * kRevT, want, 3.0, "alternate flips on every generation");
+        }
+    }
+}
+
+void testAlternateStableIsLossless()
+{
+    auto sig = [] (int i) { return 0.5f * std::sin (i * 0.011f) * std::cos (i * 0.0031f); };
+
+    Rig r;
+    r.s.speed = 1.0;
+    r.s.feedback = 1.0f;
+    r.s.clip = false;
+    r.s.fbType = FbType::Stable;
+    r.s.timeMs = 100.0;
+    r.s.direction = Direction::Alternate;
+    r.apply();
+
+    r.run (kRevT, sig);
+    r.runSilence (kRevT * 3);
+
+    // rep 1 mirrors the recording, rep 2 mirrors it back: the input again, never resampled
+    double worst = 0.0;
+    for (int t = 600; t < kRevT - 600; ++t)
+        worst = juce::jmax (worst, (double) std::abs (r.left[(size_t) (2 * kRevT + t)] - sig (t)));
+    checkNear (worst, 0.0, 1.0e-6, "the mirrored unity copy costs stable nothing");
+}
+
+void testReverseStaysInsideWhatIsWritten()
+{
+    Rig r;
+    r.s.speed = 0.5;
+    r.s.feedback = 0.8f;
+    r.s.timeMs = 100.0;
+    r.s.direction = Direction::Reverse;
+    r.apply();
+
+    bool inRange = true;
+    for (int b = 0; b < 40; ++b)
+    {
+        r.run (kRevT / 4, [] (int i) { return 0.3f * std::sin (i * 0.02f); });
+
+        for (int i = 0; i < kMaxVoices; ++i)
+        {
+            const Voice& v = r.engine.getVoice (i);
+            if (! v.active || v.sourceLost) continue;
+            if (v.srcEnd > (double) r.engine.getGenWritten (v.src) + 1.0e-9) inRange = false;
+            if (v.pOut > v.srcEnd - 1.0 + 1.0e-9) inRange = false;
+        }
+    }
+
+    check (inRange, "the latched source length never outruns the writer");
+    check (! r.engine.readOverrun(), "reverse never trips the chasing clamp");
+    check (r.allFinite(), "output stays finite");
+}
+
+void testDirectionSwitchIsClickFree()
+{
+    auto tone = [] (int i) { return 0.4f * std::sin (i * 0.017f); };
+
+    for (double speed : { 1.0, 0.5 })
+    {
+        Rig ctl, sw;
+        for (Rig* r : { &ctl, &sw })
+        {
+            r->s.speed = speed;
+            r->s.feedback = 0.6f;
+            r->s.timeMs = 100.0;
+            r->apply();
+            r->run (kRevT * 4, tone);
+        }
+
+        sw.s.direction = Direction::Reverse;
+
+        ctl.run (kRevT * 4, tone);
+        sw.run (kRevT * 4, tone);
+
+        const double control = ctl.maxStep (kRevT * 4, kRevT * 8);
+        const double switched = sw.maxStep (kRevT * 4, kRevT * 8);
+        const bool ok = switched < juce::jmax (4.0 * control, 0.05);
+        check (ok, "switching direction mid-tail leaves no step");
+        if (! ok) std::printf ("     step %.4f vs control %.4f\n", switched, control);
+    }
+}
 } // namespace
 
 int main()
@@ -1061,6 +1236,12 @@ int main()
     test ("minimum period is one buffer", testMinimumPeriodIsOneBuffer);
     test ("mono and odd block sizes", testMonoAndBlockSizes);
     test ("transport restart and cycle wrap replay identically", testTransportRestartClearsState);
+    test ("REV mirrors the repetition", testReverseMirrorsTheRepetition);
+    test ("REV stays mirrored under feedback", testReverseHoldsOrientation);
+    test ("ALT flips every other repetition", testAlternateFlipsEveryOtherRepetition);
+    test ("ALT + STABLE is a lossless mirrored copy", testAlternateStableIsLossless);
+    test ("reverse never reads unwritten samples", testReverseStaysInsideWhatIsWritten);
+    test ("a direction switch mid-tail is click free", testDirectionSwitchIsClickFree);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

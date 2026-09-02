@@ -107,6 +107,8 @@ void DelayEngine::reset()
     timeChangedSeen = false;
     tapeAnchor = true;
     forceBoundary = false;
+    dirChangedSeen = false;
+    lastDirection = settings.direction;
 
     syncActive = false;
     divPpq = lastDivPpq = 1.0;
@@ -253,10 +255,11 @@ double DelayEngine::sourceLength (int slot) const
 float DelayEngine::readInterp (int slot, double pos, int ch) const
 {
     const Gen& g = gens[slot];
-    if (g.written <= 0 || pos < 0.0) return 0.0f;
+    if (g.written <= 0) return 0.0f;
 
     const float* d = g.buf.getReadPointer (ch);
     const int last = g.written - 1;
+    if (pos <= 0.0) return d[0];
     const int i0 = (int) pos;
     if (i0 >= last) return d[last];
     return d[i0] + (float) (pos - i0) * (d[i0 + 1] - d[i0]);
@@ -326,12 +329,30 @@ void DelayEngine::openGeneration (double rEff)
         }
     }
 
-    if (nonUnitySeen || timeChangedSeen) forceFadeCounter = 2;
-    else if (forceFadeCounter > 0)       --forceFadeCounter;
+    const bool dirChanged = dirChangedSeen;
+    if (nonUnitySeen || timeChangedSeen || dirChangedSeen) forceFadeCounter = 2;
+    else if (forceFadeCounter > 0)                         --forceFadeCounter;
     nonUnitySeen = false;
     timeChangedSeen = false;
+    dirChangedSeen = false;
 
-    const double srcLen = sourceLength (srcSlot);
+    const Direction dir = settings.direction;
+
+    // A repetition inside the unity bypass has no shoulder: its content ends exactly on the
+    // boundary, at full level, and its successor now fades in. The block-level arming only
+    // reaches voices that still have a shoulder to spend, so ramp the rest out over the seam.
+    if (dirChanged && std::abs (rEff - 1.0) < kUnityEpsilon)
+        for (int i = 0; i < kMaxVoices; ++i)
+        {
+            Voice& v = voices[i];
+            if (v.active && ! v.retiring && ! v.fadeOut && v.dir != dir) retireVoice (i);
+        }
+
+    // A reverse read wants the last sample first, so it can only use what is actually
+    // written - exactly one period at every boundary. sourceLength's extra term is the
+    // recycled tail a slow voice is still writing, which reverse never reaches.
+    const double srcLen = dir == Direction::Forward ? sourceLength (srcSlot)
+                                                    : (double) gens[srcSlot].written;
 
     genCounter = newGen;
     curSlot = slot;
@@ -352,6 +373,9 @@ void DelayEngine::openGeneration (double rEff)
         v.src = srcSlot;
         v.dst = slot;
         v.fbType = settings.fbType;
+        v.dir = dir;
+        v.srcEnd = srcLen;
+        v.pOut = dir == Direction::Forward ? 0.0 : srcLen - 1.0;
         v.order = ++spawnOrder;
         // The 4x factor exists to bound how many repetitions can sound at once, which only
         // happens in GRID. TAPE repetitions are back to back, so capping them at 4T buys
@@ -406,7 +430,9 @@ void DelayEngine::openGeneration (double rEff)
         // the incoming one does not fade in, the seam is a cliff rather than a dip. So a
         // voice inherits a fade-in from its predecessor's fade-out, and the bypass
         // re-engages one generation after everything is clean again.
-        v.fadeOut = forceFadeCounter > 0 || ! v.contiguous;
+        // A reversed repetition hands src[0] over to dst[srcEnd-1], which is never
+        // continuous, so both of its ends are splices.
+        v.fadeOut = forceFadeCounter > 0 || ! v.contiguous || v.dir != Direction::Forward;
         v.fadeIn = v.fadeOut || lastSpawnFadedOut;
         lastSpawnFadedOut = v.fadeOut;
     }
@@ -434,6 +460,20 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
     }
 
     updateTiming (ns);
+
+    if (settings.direction != lastDirection)
+    {
+        // The outgoing repetition latched its fade policy before the switch, and at unity
+        // that policy is a butt join into a repetition that now fades in. Fades are
+        // positional, so arming one mid-flight is safe; a voice already inside its final
+        // shoulder would step, so leave those alone.
+        for (auto& v : voices)
+            if (v.active && ! v.retiring && ! v.fadeOut && v.predDur - v.elapsed > v.xfade)
+                v.fadeOut = true;
+
+        dirChangedSeen = true;
+        lastDirection = settings.direction;
+    }
 
     for (int b = 0; b < kNumEqBands; ++b) eq.setGainDb (b, settings.eqDb[b]);
     eq.updateCoefficients();
@@ -517,7 +557,8 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
             Gen& gs = gens[v.src];
             const bool srcOpen = (gs.writer >= 0) || (v.src == curSlot);
-            if (! v.retiring && srcOpen && gs.written > 0 && v.pOut > (double) gs.written - 1.0)
+            if (v.dir == Direction::Forward && ! v.retiring && srcOpen && gs.written > 0
+                && v.pOut > (double) gs.written - 1.0)
             {
                 v.pOut = (double) gs.written - 1.0;   // chasing read: ride the writer's edge
                 overrun = true;
@@ -534,8 +575,9 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
             }
             else if (! v.silent)
             {
-                const double srcL = sourceLength (v.src);
-                const double toContent = (srcL - v.pOut) / rEff;
+                const double toContent = v.dir == Direction::Forward
+                                           ? (sourceLength (v.src) - v.pOut) / rEff
+                                           : (v.pOut + 1.0) / rEff;
                 const double toCap = v.dmax - v.elapsed;
 
                 if (toContent <= 0.0 || toCap <= 0.0)
@@ -584,7 +626,18 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
                     if (v.writing && v.fbType == FbType::Raw)
                     {
-                        const float pre = audible * fb;
+                        // Reverse leaves dst in the input's orientation by recycling the
+                        // mirror of what it plays, which is the forward read a Forward
+                        // voice makes. Its envelope is symmetric, so it is the same one.
+                        float rec = audible;
+                        if (v.dir == Direction::Reverse)
+                        {
+                            rec = readInterp (v.src, v.srcEnd - 1.0 - v.pOut, ch);
+                            if (eqOn) rec = eq.process (v.eqRec, rec, ch);
+                            rec *= (float) envd;
+                        }
+
+                        const float pre = rec * fb;
                         clipped = clipped || std::abs (pre) > clipThresh;
                         gens[v.dst].buf.getWritePointer (ch)[v.w] = softClip (pre, clipOn, clipThresh);
                     }
@@ -592,7 +645,8 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
                 if (v.writing && v.fbType == FbType::Stable)
                 {
-                    const float u = readAt (v.src, v.w, ch);
+                    const float u = readAt (v.src, v.dir == Direction::Alternate
+                                                      ? (int) v.srcEnd - 1 - v.w : v.w, ch);
                     const float rec = eqOn ? eq.process (v.eqRec, u, ch) : u;
                     const float pre = rec * fb;
                     clipped = clipped || std::abs (pre) > clipThresh;
@@ -617,7 +671,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 
             if (! v.silent)
             {
-                v.pOut += rEff;
+                v.pOut += v.dir == Direction::Forward ? rEff : -rEff;
                 v.elapsed += 1.0;
             }
 

@@ -17,6 +17,7 @@ inline constexpr const char* fbType   = "fb_type";
 inline constexpr const char* clipOn   = "clip_on";
 inline constexpr const char* clipThr  = "clip_thresh";
 inline constexpr const char* spacing  = "spacing";
+inline constexpr const char* direction = "direction";
 inline constexpr const char* eqOn     = "eq_on";
 inline constexpr const char* dry      = "dry";
 inline constexpr const char* wet      = "wet";
@@ -78,6 +79,7 @@ private:
     std::atomic<float>* pClip = nullptr;
     std::atomic<float>* pClipThr = nullptr;
     std::atomic<float>* pSpacing = nullptr;
+    std::atomic<float>* pDirection = nullptr;
     std::atomic<float>* pEqOn = nullptr;
     std::atomic<float>* pEqBand[vspd::kNumEqBands] {};
     std::atomic<float>* pDry = nullptr;

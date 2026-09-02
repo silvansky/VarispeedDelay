@@ -15,6 +15,7 @@ instead of being cut short.
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
 | **GRID / TAPE** | When the next repetition starts — see below. |
 | **Speed** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. The line under the knob is the same figure in semitones. |
+| **FWD / REV / ALT** | Which way each repetition plays - see below. |
 | **speed grid** | 3x3 shortcuts: octaves at 1/4, 1/2, 1, 2, 4 and fourths/fifths in between. They write the speed parameter, so they glide rather than jump. |
 | **Feedback** | Recycle gain, 0 – 2. Above 1 the loop runs away by design. The readout under the knob is the loop gain: feedback times the largest EQ boost, since that boost compounds too. The arc turns red past the point where the loop stops decaying. |
 | **RAW / STABLE** | Whether the varispeed compounds each generation — see below. |
@@ -34,6 +35,29 @@ The footer's zoom box and the bottom-right corner both resize the window.
 Two readouts are worth telling apart. **Delay Time**, above the knob, is the target you
 dialled. **period**, under the knob, is what the engine is actually running — the buffer
 floor, the BEND glide and the TAPE grid all show up there, and only there.
+
+## The three directions
+
+Direction changes only what you hear, never what is recorded. The input always goes into the
+buffer forwards; the switch decides which way the repetition reads it back, and the feedback
+path is arranged so the two reverse modes stay different from each other.
+
+- **FWD** plays every repetition forward.
+- **REV** plays every repetition backwards. Repetition 1, 2 and 3 of the same input are all
+  reversed - the reversal is applied once, to the recording, and does not compound. Nothing
+  is added to the delay time: the reversed chunk is complete the moment its period ends, so
+  the first repeat still arrives after exactly `T`, unlike reverse delays that cost you a
+  buffer of latency.
+- **ALT** flips on every generation: repetition 1 backwards, 2 forwards, 3 backwards, and on.
+  This is the tape-flip sound; REV is the reverse-delay sound.
+
+Both reverse modes always cross-fade their seams. A reversed repetition ends on the first
+sample of what it read and the next one starts on the last, which is never continuous, so
+the sample-exact butt join that FWD uses at 1x is not available and the 8 ms fade is always
+in circuit. Switching direction while the delay rings is click-free; repetitions already
+sounding play out in the direction they started in.
+
+TAPE + REV is worth a try: each repetition is the whole previous one, reversed, back to back.
 
 ## The two feedback types
 
@@ -96,6 +120,15 @@ floor, the BEND glide and the TAPE grid all show up there, and only there.
   clean. 0.5×, 0.25× and anything off a preset darken progressively. Push the 6.3k / 16k
   bands to compensate. Turning the EQ off changes none of this: the interpolator is
   upstream of the filters.
+- **A reverse repetition is always exactly one period of material.** A reverse read needs
+  the last sample first, so it can only use what the source has actually written when the
+  repetition starts - which at every boundary is exactly one period. Forward can also draw
+  on the overlapping tail a slow repetition is still writing, so below 1x a forward tail
+  keeps growing generation over generation while a reverse tail does not. The repeats still
+  overlap at `r < 1`; they just stop getting longer.
+- **Leaving ALT takes one repetition to settle.** ALT works by flipping the buffer on every
+  generation, so when you switch to REV or FWD there are still flipped buffers ringing. The
+  first repetition after the switch comes out the other way round, then it is correct.
 - **EQ zipper.** Band gains are not smoothed, so a fast drag will zipper. Dragging a
   graphic EQ during a wash is a performance gesture.
 - **Lengthening the time leaves a gap.** The last repetition finishes before the longer

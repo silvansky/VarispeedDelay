@@ -59,6 +59,7 @@ public:
         bool     clip     = true;
         float    clipThresh = kClipThreshold;   // linear, not dB
         Spacing  spacing  = Spacing::Grid;
+        Direction direction = Direction::Forward;
         bool     eqOn     = false;
         float    eqDb[kNumEqBands] {};
         float    dry      = 1.0f;
@@ -166,6 +167,8 @@ private:
     bool   timeChangedSeen = false;
     bool   tapeAnchor = true;
     bool   forceBoundary = false;
+    bool   dirChangedSeen = false;
+    Direction lastDirection = Direction::Forward;
 
     bool   syncActive = false;
     double divPpq = 1.0, lastDivPpq = 1.0;

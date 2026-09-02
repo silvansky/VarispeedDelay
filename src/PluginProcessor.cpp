@@ -105,6 +105,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout VarispeedDelayProcessor::cre
         juce::ParameterID { pid::wet, 1 }, "Wet",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.0f, 1.0f), 0.5f));
 
+    // appended last so the parameter indices of every earlier release stay put
+    layout.add (std::make_unique<Choice> (
+        juce::ParameterID { pid::direction, 1 }, "Direction",
+        juce::StringArray { "Forward", "Reverse", "Alternate" }, 0));
+
     return layout;
 }
 
@@ -120,6 +125,7 @@ void VarispeedDelayProcessor::cacheParameterPointers()
     pClip     = apvts.getRawParameterValue (pid::clipOn);
     pClipThr  = apvts.getRawParameterValue (pid::clipThr);
     pSpacing  = apvts.getRawParameterValue (pid::spacing);
+    pDirection = apvts.getRawParameterValue (pid::direction);
     pEqOn     = apvts.getRawParameterValue (pid::eqOn);
     pDry      = apvts.getRawParameterValue (pid::dry);
     pWet      = apvts.getRawParameterValue (pid::wet);
@@ -155,6 +161,7 @@ void VarispeedDelayProcessor::pushSettings()
     s.clip     = pClip->load() > 0.5f;
     s.clipThresh = juce::Decibels::decibelsToGain (pClipThr->load());
     s.spacing  = pSpacing->load() > 0.5f ? Spacing::Tape : Spacing::Grid;
+    s.direction = (Direction) juce::jlimit (0, 2, (int) pDirection->load());
     s.eqOn     = pEqOn->load() > 0.5f;
     s.dry      = pDry->load();
     s.wet      = pWet->load();

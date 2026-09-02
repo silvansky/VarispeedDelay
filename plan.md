@@ -380,6 +380,81 @@ because they are the point of the mode rather than defects:
   equal-power overlap in *Click protection* earns its keep — spawn the next voice `xfade`
   early and cross them.
 
+## Direction - FWD / REV / ALT
+
+`direction` (Choice, default **FWD**) changes only the **audible tap**. What the recycle
+tap reads is what decides whether the generation buffer's orientation flips, and that is
+the entire difference between the two reverse modes.
+
+| mode | audible read `pOut` | Raw recycle -> `dst[w]` | Stable recycle -> `dst[w]` | orientation of `dst` |
+|---|---|---|---|---|
+| FWD | `0 -> srcEnd`, `+r` | the audible tap x env | `src[w]` | forward |
+| REV | `srcEnd-1 -> 0`, `-r` | `interp(src, srcEnd-1-pOut)` x env | `src[w]` | forward, so every rep is reversed |
+| ALT | `srcEnd-1 -> 0`, `-r` | the audible tap x env | `src[srcEnd-1-w]` | flipped, so reps alternate |
+
+Two things make this nearly free:
+
+- **REV / Raw needs no new state.** Its mirror read position is `srcEnd - 1 - pOut`, one
+  subtraction, and it is exactly the forward varispeed read a FWD voice would make. So the
+  feedback loop evolves identically to forward mode - same `r^N` compounding, same
+  generational resampling - and only the ear hears each generation backwards. `Voice::eqRec`,
+  previously unused in Raw, is the filter state for it.
+- **The recycle envelope is the audible envelope.** Reverse voices always fade both ends, so
+  `env` is symmetric in time and its mirror is itself. The `Dmax` term does not break that:
+  when the cap binds, `predDur == Dmax` and the fade-out coincides with the content end.
+
+ALT / Stable has to mirror the index or it would be indistinguishable from REV - Stable's
+unity copy is direction-blind. The mirror is an index flip, so Stable keeps its "no
+generational resampling" property.
+
+### The source is latched, and it is exactly one period
+
+A forward read tolerates an incomplete source: the chasing read starts a period behind the
+writer and the gap only grows. A reverse read cannot - it wants the *last* sample first.
+
+It is complete anyway. At every boundary the outgoing generation has exactly `periodLen`
+samples written: the input write guarantees `written = n+1` up to the boundary, and the
+recycling voice's `w` advances in lockstep with `n`. So
+
+```
+FWD:  srcLen = sourceLength(src)      // live, includes the writer's predWriteEnd
+REV:  srcEnd = written(src)           // latched at spawn, exact
+ALT:  srcEnd = written(src)
+```
+
+`sourceLength`'s extra term is the recycled tail a slow voice is still writing past
+`periodLen`, and that is precisely the part a reverse read must not touch. So **a reverse
+repetition always replays exactly one period of material**, duration `periodLen / r`. At
+`r < 1` it still overlaps the next repetition, but the tail does not accumulate length
+generation over generation the way forward does. In TAPE the period is still
+`spawnDur = srcEnd / r`, so TAPE + REV runs away at `r < 1` exactly as documented above.
+
+### Fades and switching on the fly
+
+A reversed repetition hands `src[0]` over to `dst[srcEnd-1]`, which is never continuous, so
+`fadeIn = fadeOut = true` unconditionally for every non-forward voice. That also makes
+`Voice::contiguous` and the unity bypass moot there.
+
+Direction latches per voice at spawn, like `fbType`, so voices in flight keep theirs and the
+change lands at the next boundary. Two things keep that click-free:
+
+- The block-level detector arms `forceFadeCounter` and sets `fadeOut` on live voices. Fades
+  are positional, so arming one mid-flight is safe - the same property that lets a rate
+  change un-fade correctly. Voices already inside their final shoulder would *step*, so
+  they are skipped (`predDur - elapsed > xfade`).
+- Those skipped voices are the unity-bypass case, where the repetition's content ends exactly
+  on the boundary at full level with no shoulder left to spend. The engine's usual protection
+  is the `!unity` term in the envelope, but that only works because speed and time changes are
+  *smoothed* - a direction change is instantaneous by nature. So at a direction change on a
+  unity boundary those voices are `retireVoice`d instead, ramping out over `xfade` while
+  holding their last sample, the same pattern `sourceLost` already uses. Their recycle write
+  is complete at that point (`predWriteEnd == periodLen`), so nothing downstream is truncated.
+
+Switching **out of ALT** while the tail rings leaves flipped buffers in the ring, so the first
+repetition after the switch sounds forward before REV settles. One repetition, then correct.
+Tracking a `Gen::flipped` bit through the chain would fix it, but that adds an orientation
+concept to the model for a transient nobody hears twice.
+
 ## Click protection
 
 The fade length is **proportional to what is being faded**, not a fixed millisecond value,
@@ -479,6 +554,7 @@ supports two voices sounding at once.
 | `clip_on` | Bool | default on | soft clip in the recycle path |
 | `clip_thresh` | Float | -36 - -1 dBFS, default -6 | where the clip's knee starts; ceiling stays 0 dBFS |
 | `spacing` | Choice | Grid / Tape | when the next repetition starts |
+| `direction` | Choice | Forward / Reverse / Alternate | which way the audible tap reads; appended last in the layout so earlier parameter indices do not move |
 | `eq_on` | Bool | | |
 | `eq_b1` … `eq_b7` | Float | −12 … +12 dB | 63, 160, 400, 1k, 2.5k, 6.3k, 16k |
 | `dry` | Float | 0 – 1 (gain) | |
