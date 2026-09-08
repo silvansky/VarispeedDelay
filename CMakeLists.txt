@@ -10,9 +10,20 @@ juce_add_plugin(VarispeedDelay
     PLUGIN_CODE Vspd
     FORMATS VST3 AU Standalone
     PRODUCT_NAME "VarispeedDelay"
+    COMPANY_WEBSITE "https://github.com/silvansky"
+    COMPANY_EMAIL "v.silvansky@gmail.com"
+    DESCRIPTION "Delay that replays each repetition at a different tape speed"
     NEEDS_MIDI_INPUT FALSE
     IS_SYNTH FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
+    # Without "Delay" hosts file this under the generic Fx bucket.
+    VST3_CATEGORIES "Fx" "Delay"
+    # ValueFields are click-to-type; without focus some hosts swallow the keystrokes.
+    EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+    # Default FALSE makes the AU declare all-files read-write plus network client access.
+    # Nothing here needs either: host programs read only embedded presets, and the user
+    # preset directory is surfaced only by authoring builds.
+    AU_SANDBOX_SAFE TRUE
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "VarispeedDelay needs audio input to process live signal."
 )
