@@ -126,6 +126,24 @@ target_link_libraries(VarispeedDelayPresetTests
         juce::juce_recommended_warning_flags
 )
 
+# ---- offscreen screenshot tool (renders the editor without a window) --------
+# Out of ALL: docs tooling, and CI has no reason to pay for another JUCE compile.
+add_executable(VarispeedDelayShot EXCLUDE_FROM_ALL tools/Screenshot.cpp)
+add_dependencies(VarispeedDelayShot VarispeedDelay_BuildDate)
+
+target_include_directories(VarispeedDelayShot PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_features(VarispeedDelayShot PRIVATE cxx_std_20)
+
+target_link_libraries(VarispeedDelayShot
+    PRIVATE
+        VarispeedDelay
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_audio_processors
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
 enable_testing()
 add_test(NAME engine COMMAND VarispeedDelayTests)
 add_test(NAME presets COMMAND VarispeedDelayPresetTests)

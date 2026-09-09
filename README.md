@@ -40,6 +40,8 @@ ctest --output-on-failure          # engine + preset/parameter unit tests
 ```
 
 Artefacts land in `build/VarispeedDelay_artefacts/Release/{Standalone,AU,VST3}/`.
+The UI screenshot above is regenerated offscreen, without running the app, by the
+`VarispeedDelayShot` target - see `CLAUDE.md`.
 `./install-au.sh` signs the AU, installs it to `~/Library/Audio/Plug-Ins/Components` and
 runs `auval`; `--system` installs to `/Library` instead and asks for sudo.
 

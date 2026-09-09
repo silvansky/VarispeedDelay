@@ -12,6 +12,34 @@ Run: `open build/VarispeedDelay_artefacts/Release/Standalone/VarispeedDelay.app`
 Install AU + auval: `./install-au.sh` (user scope; `--system` needs sudo)
 Tests: `cd build && ctest --output-on-failure` (engine unit tests + preset/parameter tests)
 
+## Screenshots
+
+`VarispeedDelayShot` renders the editor into a PNG offscreen - it never opens a window, so
+it neither steals focus nor needs anything to be the frontmost app. That matters because
+macOS stops rendering a window whose Space is not the active one: capturing the running
+standalone fails outright (`could not create image from window`, and its accessibility tree
+reports no windows) whenever you are working on another Space.
+
+```bash
+cmake --build build --config Release --target VarispeedDelayShot   # not in the default build
+build/VarispeedDelayShot --list                                    # presets, parameter ids + ranges
+build/VarispeedDelayShot --out docs/screenshot.png --scale 2
+build/VarispeedDelayShot --out rev.png --scale 1 --param speed=0.5 --param direction=1
+build/VarispeedDelayShot --out oct.png --preset "Octave Tremolo"
+```
+
+`--out` is relative to the working directory, `--scale 1` gives the design's 800x500 and
+`--scale 2` the retina 1600x1000. `--param <id>=<value>` repeats; values are plain numbers
+and a choice parameter takes its index. `--param` and `--preset` go through the APVTS, so
+the UI shows them exactly as it would in a host.
+
+- `--audio <ms>` (default 250) runs that much silence through the processor first. The
+  period readout is engine state, and reads the prepared value until blocks have run.
+- `--settle <ms>` (default 400) then pumps the message loop so the editor's 30 Hz snapshot
+  and the parameter attachments catch up before the image is taken.
+- It is a console app, so `isStandaloneApp()` is false and the preset row stays hidden -
+  the image is the plugin's look, not the standalone's.
+
 ## Architecture
 
 JUCE 8 plugin (VST3/AU/Standalone), C++20, JUCE submodule in `libs/JUCE`.
