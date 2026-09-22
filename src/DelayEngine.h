@@ -34,9 +34,18 @@ inline constexpr double kTailGenerations = 10.0;
 inline constexpr double kUnityEpsilon    = 1.0e-4;
 inline constexpr double kClipHoldMs      = 120.0;   // so a 30 Hz UI cannot miss a hit
 inline constexpr double kResetDeclickMs  = 2.0;    // ramp of the killed tail, output only
+inline constexpr int    kMaxChains       = 12;     // CHAIN slots; two are kept free for fades
+inline constexpr int    kMaxChainReps    = 12;     // repetitions one chain will ever play
+inline constexpr double kChainRingSec    = 60.0;   // input history CHAIN replays its windows from
+inline constexpr double kMinChainRepMs   = 5.0;    // a shorter repetition is not worth sounding
+inline constexpr double kChainGainFloor  = 0.001;  // nor a quieter one, -60 dB
+
+static_assert (kMaxChainReps <= kNumEqStages, "every repetition needs its own EQ stage");
+
+inline constexpr int    kMaxUiTaps       = kMaxChains > kMaxVoices ? kMaxChains : kMaxVoices;
 
 enum class TimeMode { Regrid = 0, Bend };
-enum class Spacing  { Grid = 0, Tape };
+enum class Spacing  { Grid = 0, Tape, Chain };
 
 struct Division { const char* name; double quarters; bool isBar; };
 int numDivisions();
@@ -127,6 +136,28 @@ private:
         void resetState() noexcept { inputLen = 0; written = 0; writer = -1; inputTaper = 0; }
     };
 
+    /** One recorded window replaying itself faster and faster. CHAIN gives every window its
+        own, so nothing is recycled, the grid never runs away, and a chain ends by itself. */
+    struct Chain
+    {
+        bool   active   = false;
+        bool   retiring = false;
+        bool   reverse  = false;   // latched per repetition, so a direction flip lands on a fade
+        int    start    = 0;       // ring index of the window's first sample
+        int    len      = 0;       // window length in samples
+        int    rep      = 1;       // 1-based, and the exponent the rate is raised to
+        int    order    = 0;       // launch sequence, for stealing
+        juce::int64 launch = 0;    // ring clock at launch, for window expiry
+        double pos      = 0.0;     // read offset into the window, 0 .. len
+        double gain     = 1.0;     // fb^rep, latched per repetition
+        double xfade    = 1.0;
+        double elapsed  = 0.0;     // output samples since this repetition started
+        bool   lastRep  = false;   // nothing follows it, so its end is a truncation
+        double retireLeft = 0.0, retireEnv = 1.0;
+        float  env      = 0.0f;
+        EqState eqState;
+    };
+
     bool   transportRestarted (int numSamples);
     void   updateTiming (int numSamples);
     void   openGeneration (double rEff);
@@ -139,12 +170,27 @@ private:
     void   updateTail();
     void   publishUi();
 
+    void   processChain (juce::AudioBuffer<float>& buffer, int nch, int ns);
+    void   launchChain (int len, double rEff, float fb);
+    void   startChainRep (int index, int rep, double gain, double rEff, float fb);
+    void   retireChain (int index);
+    int    allocChain();
+    float  ringRead (int start, double offset, int ch) const noexcept;
+    double chainXfade (double dur) const noexcept;
+    double chainTailSeconds() const;
+
     Settings  settings;
     Transport transport;
     GraphicEQ eq;
 
     Gen   gens[kNumGenBuffers];
     Voice voices[kMaxVoices];
+
+    juce::AudioBuffer<float> ring;   // CHAIN only: the dry input, continuously recorded
+    Chain chains[kMaxChains];
+    int   ringLen = 0, ringWrite = 0, chainOrder = 0;
+    juce::int64 ringClock = 0;
+    double ratePow[kMaxChainReps + 1] {};
 
     double sr = 44100.0;
     int    numChannels = 2;
@@ -167,6 +213,7 @@ private:
     bool   timeChangedSeen = false;
     bool   tapeAnchor = true;
     bool   forceBoundary = false;
+    Spacing lastSpacing = Spacing::Grid;
     bool   dirChangedSeen = false;
     Direction lastDirection = Direction::Forward;
 
@@ -197,9 +244,9 @@ private:
     std::atomic<double> uiBpm { 120.0 };
     std::atomic<int>    uiVoices { 0 };
     std::atomic<bool>   uiClipping { false };
-    std::atomic<float>  uiVoiceElapsed[kMaxVoices] {};
-    std::atomic<float>  uiVoiceDuration[kMaxVoices] {};
-    std::atomic<float>  uiVoiceEnv[kMaxVoices] {};
+    std::atomic<float>  uiVoiceElapsed[kMaxUiTaps] {};
+    std::atomic<float>  uiVoiceDuration[kMaxUiTaps] {};
+    std::atomic<float>  uiVoiceEnv[kMaxUiTaps] {};
 };
 
 } // namespace vspd

@@ -13,7 +13,7 @@ instead of being cut short.
 | **TAP** | Taps a tempo. Free running it writes the delay time; in sync it sets the tempo used when the host has none. |
 | **Note** | 1/32 up to 2 bars, straight, dotted and triplet. |
 | **REGRID / BEND** | How the tail reacts to a time change — see below. |
-| **GRID / TAPE** | When the next repetition starts — see below. |
+| **GRID / TAPE / CHAIN** | When the next repetition starts — see below. |
 | **Speed** | Tape speed, 0.25× – 4×. Global: turning it bends every sounding repetition at once. The line under the knob is the same figure in semitones. |
 | **FWD / REV / ALT** | Which way each repetition plays - see below. |
 | **speed grid** | 3x3 shortcuts: octaves at 1/4, 1/2, 1, 2, 4 and fourths/fifths in between. They write the speed parameter, so they glide rather than jump. |
@@ -84,6 +84,8 @@ TAPE + REV is worth a try: each repetition is the whole previous one, reversed, 
 
 - **GRID** keeps repetitions arriving every `T` no matter what the speed is, so the delay
   stays in time. Slow repeats overlap the next ones.
+- **CHAIN** also keeps them arriving every `T`, but each arrival is a whole run of
+  repetitions rather than one — see below.
 - **TAPE** starts the next repetition when the previous one *ends*, which is what a tape
   loop with a detuned motor does. Repeats then accelerate at `r > 1` and decelerate at
   `r < 1` — `T`, `T/r`, `T/r²`, … — until they hit the buffer-size / 20 s clamp. The time knob
@@ -97,6 +99,29 @@ TAPE + REV is worth a try: each repetition is the whole previous one, reversed, 
   window — at 0.5x, half of it. That is arithmetic, not a defect: a tape that keeps slowing
   down can never replay everything it recorded. If you want every repetition complete, use
   **GRID**, where a 2 s window is always replayed in full over 4 s at 0.5x.
+
+- **CHAIN** gives every recorded window its own run of repetitions instead of recycling one
+  buffer. At `T = 1 s` and 2x you hear 1 s of dry, then that window replayed over 0.5 s, then
+  again over 0.25 s, 0.125 s and so on — while the *next* second of input is being recorded
+  behind it, to start its own run at 2 s. The repetitions inside a chain accelerate exactly as
+  TAPE's do, but the chains themselves always start on the delay time, so the grid never runs
+  away from the knob and never collapses onto the audio buffer.
+
+  `T/r + T/r² + …` sums to `T/(r−1)`, so a chain lasts exactly one delay time at 2x — the
+  runs meet end to end. Below 2x they overlap, above it each run finishes early and leaves
+  space before the next: two thirds of the period at 4x. That space is an echo with air
+  around it, not a flutter, because it happens at the delay time.
+
+  At `r = 1` CHAIN is an ordinary delay, sample for sample — a chain that never accelerates
+  is the same sum of repetitions a recycled buffer gives.
+
+  What it costs: the tail is finite. A chain stops after 12 repetitions, or once one would
+  be shorter than 5 ms or quieter than −60 dB, and at most ten sound at once. With feedback
+  under about 0.8 you will not hear the end of it; above that the tail is cut where a
+  recycled one would have run on. Nothing cross-pollinates either — each window's echoes
+  stay its own, so the sound is clean and separable rather than the smear TAPE builds. Below
+  1x the runs grow instead of shrinking and pile up until those limits stop them, so CHAIN
+  is really an above-1x mode; GRID and TAPE are still there for the rest.
 
 ## Things that are deliberate, not defects
 

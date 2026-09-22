@@ -801,6 +801,138 @@ void testUnityAfterSpeedChange()
     }
 }
 
+//==============================================================================
+void testChainSpacing()
+{
+    // CHAIN unrolls the feedback loop: every recorded window gets its own chain of
+    // repetitions instead of one recycled buffer. At r = 1 that has to be the very same
+    // delay - the terms are just summed in a different order. Keep the Rig's prepared time
+    // so no regrid splice fires, and stay inside the concurrency cap so nothing truncates.
+    auto render = [] (Spacing sp)
+    {
+        Rig r;
+        r.s.spacing = sp;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.clip = false;
+        r.apply();
+        r.run ((int) (kSr * 1.0), [] (int i) { return 0.3f * (float) std::sin (i * 0.01); });
+        return r.left;
+    };
+
+    const auto grid = render (Spacing::Grid);
+    const auto chain = render (Spacing::Chain);
+    check (grid.size() == chain.size(), "same length");
+
+    double worst = 0.0;
+    for (size_t i = 0; i < grid.size(); ++i)
+        worst = juce::jmax (worst, (double) std::abs (grid[i] - chain[i]));
+    checkNear (worst, 0.0, 1.0e-5, "CHAIN == GRID at r = 1");
+
+    // feedback is the recycle gain, so the first repetition still arrives at full level
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.0f;
+        r.apply();
+
+        const int T = (int) std::round (0.1 * kSr);
+        r.run (T, [] (int i) { return i == 100 ? 1.0f : 0.0f; });
+        r.runSilence (T * 3);
+
+        checkNear (r.firstNonZero (T / 2, T * 3), T + 100, 2.0, "delayed by exactly T");
+        checkNear (r.peak (T, T * 2), 1.0f, 0.02, "unity gain at fb 0");
+        check (r.peak (T * 2, T * 3) < 1.0e-5f, "no second repeat at fb 0");
+    }
+
+    // the grid never runs away from the knob, at any speed, and the pool holds
+    for (double speed : { 0.25, 0.5, 1.5, 2.0, 4.0 })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = speed;
+        r.s.feedback = 0.9f;
+        r.apply();
+        r.run ((int) (kSr * 6), [] (int i) { return 0.4f * (float) std::sin (i * 0.02); });
+
+        check (r.allFinite(), "chain stays finite at every speed");
+        checkNear (r.engine.getPeriodMs(), 100.0, 1.0e-6, "the period is always the knob");
+        check (r.engine.maxConcurrentVoices() <= kMaxChains, "chain pool respected");
+        check (r.engine.getTailSeconds() > 0.0, "tail is reported");
+    }
+}
+
+void testChainIsIndependentOfBlockSize()
+{
+    // the CHAIN grid is the delay time, never the host buffer, so two buffer sizes have to
+    // produce the same samples - this is the whole point of it above 1x
+    auto render = [] (int block)
+    {
+        DelayEngine e;
+        DelayEngine::Settings s;
+        s.spacing = Spacing::Chain;
+        s.speed = 2.0;
+        s.timeMs = 200.0;
+        s.feedback = 0.8f;
+        s.dry = 0.0f;
+        s.wet = 1.0f;
+        e.setSettings (s);
+        e.prepare (kSr, block, 2);
+
+        std::vector<float> out;
+        juce::AudioBuffer<float> buf (2, block);
+        int idx = 0;
+        while ((int) out.size() < (int) (kSr * 2))
+        {
+            for (int i = 0; i < block; ++i)
+            {
+                const float x = 0.4f * (float) std::sin (idx++ * 0.02);
+                buf.setSample (0, i, x);
+                buf.setSample (1, i, x);
+            }
+            e.process (buf);
+            for (int i = 0; i < block; ++i) out.push_back (buf.getSample (0, i));
+        }
+        return out;
+    };
+
+    const auto small = render (64);
+    const auto large = render (1024);
+    const size_t n = juce::jmin (small.size(), large.size());
+
+    double worst = 0.0;
+    for (size_t i = 0; i < n; ++i)
+        worst = juce::jmax (worst, (double) std::abs (small[i] - large[i]));
+    checkNear (worst, 0.0, 1.0e-6, "CHAIN sounds the same at 64 and 1024 samples");
+}
+
+void testChainRepetitionsAccelerateAndStop()
+{
+    // one window, 2x: its repetitions last T/2, T/4, T/8 ... so they start at T, T + T/2,
+    // T + 3T/4 ... and the chain runs out just as the next window's would arrive
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 2.0;
+    r.s.feedback = 0.9f;
+    r.apply();
+
+    const int T = (int) std::round (0.1 * kSr);
+    const int burst = T / 10;
+    r.run (T, [burst] (int i) { return i < burst ? 0.4f * (float) std::sin (i * 0.05) : 0.0f; });
+    r.runSilence (T * 5);
+
+    const int starts[] { T, T + T / 2, T + T / 2 + T / 4, T + T / 2 + T / 4 + T / 8 };
+    for (int k = 0; k < 4; ++k)
+    {
+        const int hit = r.firstNonZero (starts[k] - burst / 2, starts[k] + burst, 1.0e-4f);
+        checkNear (hit, starts[k], 24.0, "repetition starts where the last one ended");
+    }
+
+    // T/2 + T/4 + ... = T, so nothing of this window is left by the time 2T comes round
+    check (r.peak (2 * T + burst, 5 * T) < 1.0e-4f, "the chain ends by itself");
+}
+
 void testNoAllocationInProcess()
 {
     DelayEngine e;
@@ -831,7 +963,8 @@ void testNoAllocationInProcess()
         s.eqOn     = (b % 3) == 0;
         s.sync     = (b % 2) == 0;
         s.divIndex = b % numDivisions();
-        s.spacing  = (b % 11) == 0 ? Spacing::Tape : Spacing::Grid;
+        s.spacing  = (b % 11) == 0 ? Spacing::Tape
+                   : (b % 7) == 0  ? Spacing::Chain : Spacing::Grid;
         s.timeMode = (b % 13) == 0 ? TimeMode::Bend : TimeMode::Regrid;
         s.fbType   = (b % 17) == 0 ? FbType::Stable : FbType::Raw;
         s.direction = (Direction) (b % 3);
@@ -849,8 +982,8 @@ void testNoAllocationInProcess()
         }
         e.process (buf);
 
-        DelayEngine::VoiceInfo info[kMaxVoices];
-        e.getVoiceSnapshot (info, kMaxVoices);
+        DelayEngine::VoiceInfo info[kMaxUiTaps];
+        e.getVoiceSnapshot (info, kMaxUiTaps);
         (void) e.getTailSeconds();
     }
 
@@ -1242,6 +1375,9 @@ int main()
     test ("ALT + STABLE is a lossless mirrored copy", testAlternateStableIsLossless);
     test ("reverse never reads unwritten samples", testReverseStaysInsideWhatIsWritten);
     test ("a direction switch mid-tail is click free", testDirectionSwitchIsClickFree);
+    test ("CHAIN spacing", testChainSpacing);
+    test ("CHAIN does not depend on the host buffer", testChainIsIndependentOfBlockSize);
+    test ("CHAIN repetitions accelerate and stop", testChainRepetitionsAccelerateAndStop);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -50,6 +50,7 @@ crossfade rules, parameter table, phases. `USAGE.md` documents the accepted beha
 
 ```
 src/DelayEngine.{h,cpp}    generation ring, voice pool, periods, fades, bend, sync, clip
+                           plus CHAIN's input ring and chain pool (processChain)
 src/Voice.h                per-voice state
 src/GraphicEQ.{h,cpp}      7 x stereo RBJ peaking biquad, POD coefficients
 src/Presets.{h,cpp}        embedded + user presets, reset-then-overlay apply
@@ -83,6 +84,20 @@ Engine invariants worth knowing before changing it:
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long
   as its source, so it outlives the audible tap at speeds above 1.
+- CHAIN does not use any of the above. It records the dry input into one 60 s ring and gives
+  every window that closes on the grid its own chain: repetition j is that window read at
+  `r^j` with gain `fb^(j-1)`, so nothing is recycled and nothing can run away. A chain ends
+  at `kMaxChainReps`, at `kMinChainRepMs`, or at `kChainGainFloor`, and `allocChain` keeps
+  two of `kMaxChains` slots free so a launch can always displace an older chain and still let
+  it fade. `reset()` deliberately does not clear the ring - the first window after a reset is
+  recorded from scratch, and clearing 23 MB on the audio thread is not free.
+- At `r = 1` CHAIN is sample-identical to GRID, and the test asserts it. That works because a
+  repetition is handed over between *chains*, not within one: the chain launched a period
+  later starts on the very next recorded sample at the same gain, so neither end is faded.
+  Only a chain's last repetition, which nothing follows, fades out - `Chain::lastRep`.
+- The clip and the EQ belong to the recycle path, so CHAIN applies neither to repetition 1.
+  The EQ's j passes become one coefficient set per repetition index (`kNumEqStages`), which
+  matches a cascade at each band centre but not in the skirts.
 - Direction changes only the audible tap; what the *recycle* tap reads is what decides
   whether the buffer flips, and that is the whole difference between REV and ALT. Reverse
   latches its source at the boundary, where the generation is always exactly `periodLen`
@@ -121,6 +136,8 @@ The invariants behind it:
 - Self-documenting code, no comments unless critical. Minimal diffs.
 - Commits: imperative, short, no period.
 - JUCE Font API: `juce::FontOptions`, not the deprecated float constructor.
+- Spacing is a 3-choice parameter and "Chain" is appended last, so the indices saved by
+  earlier releases still mean what they meant.
 - **ASCII only in string literals.** `juce::String (const char*)` decodes as Latin-1, not
   UTF-8, so an em-dash or arrow in a UI string arrives as mojibake. Write `-`, not `—`.
   Comments are unaffected.

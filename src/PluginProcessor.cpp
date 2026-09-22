@@ -82,7 +82,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout VarispeedDelayProcessor::cre
 
     layout.add (std::make_unique<Choice> (
         juce::ParameterID { pid::spacing, 1 }, "Spacing",
-        juce::StringArray { "Grid", "Tape" }, 0));
+        juce::StringArray { "Grid", "Tape", "Chain" }, 0));
 
     layout.add (std::make_unique<Bool> (juce::ParameterID { pid::eqOn, 1 }, "EQ", false));
 
@@ -160,7 +160,7 @@ void VarispeedDelayProcessor::pushSettings()
     s.fbType   = pFbType->load() > 0.5f ? FbType::Stable : FbType::Raw;
     s.clip     = pClip->load() > 0.5f;
     s.clipThresh = juce::Decibels::decibelsToGain (pClipThr->load());
-    s.spacing  = pSpacing->load() > 0.5f ? Spacing::Tape : Spacing::Grid;
+    s.spacing  = (Spacing) juce::jlimit (0, 2, (int) pSpacing->load());
     s.direction = (Direction) juce::jlimit (0, 2, (int) pDirection->load());
     s.eqOn     = pEqOn->load() > 0.5f;
     s.dry      = pDry->load();
