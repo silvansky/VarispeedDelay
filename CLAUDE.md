@@ -87,14 +87,21 @@ Engine invariants worth knowing before changing it:
 - CHAIN does not use any of the above. It records the dry input into one 60 s ring and gives
   every window that closes on the grid its own chain: repetition j is that window read at
   `r^j` with gain `fb^(j-1)`, so nothing is recycled and nothing can run away. A chain ends
-  at `kMaxChainReps`, at `kMinChainRepMs`, or at `kChainGainFloor`, and `allocChain` keeps
-  two of `kMaxChains` slots free so a launch can always displace an older chain and still let
-  it fade. `reset()` deliberately does not clear the ring - the first window after a reset is
+  at `kMaxChainReps`, at `kMinChainRepMs` (or half its window, if that is shorter), or at
+  `kChainGainFloor`. A window below `kChainSilence` launches no chain, so silence never
+  displaces a sounding one. `kMaxChains` holds every repetition down to 0.5x Stable, and
+  `allocChain` keeps two slots free so a launch can always displace the quietest chain and
+  still let it fade. The period floor is one sample, not the host buffer (`periodFloor`).
+  `reset()` deliberately does not clear the ring - the first window after a reset is
   recorded from scratch, and clearing 23 MB on the audio thread is not free.
 - At `r = 1` CHAIN is sample-identical to GRID, and the test asserts it. That works because a
-  repetition is handed over between *chains*, not within one: the chain launched a period
-  later starts on the very next recorded sample at the same gain, so neither end is faded.
-  Only a chain's last repetition, which nothing follows, fades out - `Chain::lastRep`.
+  repetition is handed over between *chains*, not within one: repetition j of one window ends
+  on the sample where the next window's repetition j starts, so neither end is faded. That
+  holds only for a forward seam between two equally long windows - `alignPrev`/`alignNext`,
+  and for the newest chain the length the open window will close at. Reversed repetitions, a
+  fractional sync period, a regrid and a recent direction change all fade instead. A free
+  window within `kXfadeMaxMs` of closing locks its end (`windowEnd`), because a seam that
+  has already skipped its fade is counting on it.
 - The clip and the EQ belong to the recycle path, so CHAIN applies neither to repetition 1.
   The EQ's j passes become one coefficient set per repetition index (`kNumEqStages`), which
   matches a cascade at each band centre but not in the skirts.

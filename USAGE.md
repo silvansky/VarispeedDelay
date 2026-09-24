@@ -116,7 +116,9 @@ TAPE + REV is worth a try: each repetition is the whole previous one, reversed, 
   is the same sum of repetitions a recycled buffer gives.
 
   What it costs: the tail is finite. A chain stops after 12 repetitions, or once one would
-  be shorter than 5 ms or quieter than −60 dB, and at most ten sound at once. With feedback
+  be shorter than 5 ms or quieter than −60 dB, and at most 24 sound at once — every
+  repetition at 1x, and down to 0.5x with Stable feedback. Silent windows start no chain.
+  With feedback
   under about 0.8 you will not hear the end of it; above that the tail is cut where a
   recycled one would have run on. Nothing cross-pollinates either — each window's echoes
   stay its own, so the sound is clean and separable rather than the smear TAPE builds. Below
