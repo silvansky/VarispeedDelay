@@ -933,6 +933,70 @@ void testChainRepetitionsAccelerateAndStop()
     check (r.peak (2 * T + burst, 5 * T) < 1.0e-4f, "the chain ends by itself");
 }
 
+void testChainSeamsDoNotStep()
+{
+    // at r = 1 only a forward seam between two equally long windows may skip its fade;
+    // a reversed repetition, a regrid and a fractional sync period all have to fade instead
+    auto sine = [] (int i) { return 0.3f * (float) std::sin (i * 0.01); };
+    constexpr double kMaxSeamStep = 0.03;
+
+    for (auto dir : { Direction::Reverse, Direction::Alternate })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.direction = dir;
+        r.apply();
+        r.run ((int) (kSr * 1.5), sine);
+        check (r.maxStep (0, r.written) < kMaxSeamStep, "reversed seams fade at r = 1");
+    }
+
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.8f;
+        r.apply();
+        r.run ((int) (kSr * 0.5), sine);
+        r.s.timeMs = 130.0;
+        r.run ((int) (kSr * 1.5), sine);
+        check (r.maxStep (0, r.written) < kMaxSeamStep, "regrid seams fade at r = 1");
+    }
+
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.8f;
+        r.s.sync = true;
+        r.s.divIndex = 2;     // 1/16
+        r.apply();
+
+        DelayEngine::Transport t;
+        t.valid = true;
+        t.playing = true;
+        t.bpm = 121.0;        // 5950.4 samples, so windows alternate in length
+
+        const double ppqPerSample = t.bpm / 60.0 / kSr;
+        juce::AudioBuffer<float> buf (2, kBlock);
+        std::vector<float> out;
+        int idx = 0;
+        for (int b = 0; b < (int) (kSr * 1.5) / kBlock; ++b)
+        {
+            t.ppq = idx * ppqPerSample;
+            for (int i = 0; i < kBlock; ++i) { const float x = sine (idx++); buf.setSample (0, i, x); buf.setSample (1, i, x); }
+            r.engine.setTransport (t);
+            r.engine.process (buf);
+            for (int i = 0; i < kBlock; ++i) out.push_back (buf.getSample (0, i));
+        }
+
+        double worst = 0.0;
+        for (size_t i = 1; i < out.size(); ++i) worst = juce::jmax (worst, (double) std::abs (out[i] - out[i - 1]));
+        check (worst < kMaxSeamStep, "fractional sync seams fade at r = 1");
+    }
+}
+
 void testNoAllocationInProcess()
 {
     DelayEngine e;
@@ -1378,6 +1442,7 @@ int main()
     test ("CHAIN spacing", testChainSpacing);
     test ("CHAIN does not depend on the host buffer", testChainIsIndependentOfBlockSize);
     test ("CHAIN repetitions accelerate and stop", testChainRepetitionsAccelerateAndStop);
+    test ("CHAIN seams do not step", testChainSeamsDoNotStep);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

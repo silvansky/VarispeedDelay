@@ -152,7 +152,11 @@ private:
         double gain     = 1.0;     // fb^rep, latched per repetition
         double xfade    = 1.0;
         double elapsed  = 0.0;     // output samples since this repetition started
-        bool   lastRep  = false;   // nothing follows it, so its end is a truncation
+        bool   lastRep  = false;   // the chain ends with this repetition
+        bool   alignPrev = true;   // the window before was as long as this one, or silent
+        bool   alignNext = false;  // likewise the window after, once it has closed
+        int    prevLen  = 0;       // the window before, 0 when there was none to hand over from
+        bool   seamIn   = false;   // this repetition starts where the previous window's ended
         double retireLeft = 0.0, retireEnv = 1.0;
         float  env      = 0.0f;
         EqState eqState;
@@ -171,7 +175,8 @@ private:
     void   publishUi();
 
     void   processChain (juce::AudioBuffer<float>& buffer, int nch, int ns);
-    void   launchChain (int len, double rEff, float fb);
+    void   closeWindow (int len, double rEff, float fb);
+    int    launchChain (int len, double rEff, float fb, bool alignPrev, int prevLen);
     void   startChainRep (int index, int rep, double gain, double rEff, float fb);
     void   retireChain (int index);
     int    allocChain();
@@ -190,6 +195,9 @@ private:
     Chain chains[kMaxChains];
     int   ringLen = 0, ringWrite = 0, chainOrder = 0;
     juce::int64 ringClock = 0;
+    juce::int64 dirChangeClock = 0;
+    int   prevWindowLen = 0, prevChain = -1, prevChainOrder = 0;
+    int   windowEnd = 0;   // the open window's length once it is too close to closing to move
     double ratePow[kMaxChainReps + 1] {};
 
     double sr = 44100.0;

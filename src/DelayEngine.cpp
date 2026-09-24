@@ -94,6 +94,10 @@ void DelayEngine::reset()
     for (auto& v : voices) v = Voice{};
     for (auto& c : chains) c = Chain{};
     chainOrder = 0;
+    prevWindowLen = 0;
+    prevChain = -1;
+    windowEnd = 0;
+    dirChangeClock = ringClock - (juce::int64) ringLen;
 
     genCounter = 0;
     curSlot = 0;
@@ -554,6 +558,10 @@ void DelayEngine::startChainRep (int index, int rep, double gain, double rEff, f
     const double rate = stable ? rEff : std::pow (rEff, (double) rep);
     c.xfade = chainXfade ((double) c.len / std::max (rate, 1.0e-6));
 
+    // at rate 1 the previous window's chain ends its repetition `rep` right here, and the
+    // two only meet sample-exactly if they run the same way and are equally long
+    c.seamIn = ! c.reverse && c.alignPrev && ringClock - dirChangeClock > c.prevLen;
+
     const int next = rep + 1;
     const double nextRate = stable ? rEff : std::pow (rEff, (double) next);
     c.lastRep = next > kMaxChainReps
@@ -561,9 +569,9 @@ void DelayEngine::startChainRep (int index, int rep, double gain, double rEff, f
                 || std::abs (gain * (double) fb) < kChainGainFloor;
 }
 
-void DelayEngine::launchChain (int len, double rEff, float fb)
+int DelayEngine::launchChain (int len, double rEff, float fb, bool alignPrev, int prevLen)
 {
-    if (len <= 0 || ringLen <= 0) return;
+    if (len <= 0 || ringLen <= 0) return -1;
 
     const int ci = allocChain();
     Chain& c = chains[ci];
@@ -574,10 +582,27 @@ void DelayEngine::launchChain (int len, double rEff, float fb)
     if (c.start < 0) c.start += ringLen;
     c.order = ++chainOrder;
     c.launch = ringClock;
+    c.alignPrev = alignPrev;
+    c.prevLen = prevLen;
 
     // feedback is the recycle gain, so the first repetition comes back at full level -
     // repetition j carries fb^(j-1), exactly as the generation ring's first tap does
     startChainRep (ci, 1, 1.0, rEff, fb);
+    return ci;
+}
+
+/** Windows are contiguous, so at rate 1 a chain's repetition j ends exactly where the next
+    window's starts - but only if both windows are equally long. */
+void DelayEngine::closeWindow (int len, double rEff, float fb)
+{
+    const int clamped = juce::jmin (len, ringLen);
+    if (prevChain >= 0 && chains[prevChain].order == prevChainOrder)
+        chains[prevChain].alignNext = chains[prevChain].len == clamped;
+
+    const bool alignPrev = prevWindowLen == 0 || prevWindowLen == clamped;
+    prevChain = launchChain (len, rEff, fb, alignPrev, prevWindowLen);
+    prevChainOrder = chainOrder;
+    prevWindowLen = clamped;
 }
 
 /** CHAIN: the input grid stays at T and every window that closes on it starts a chain of its
@@ -592,6 +617,7 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
     const bool bend = settings.timeMode == TimeMode::Bend;
     const bool stable = settings.fbType == FbType::Stable;
     const bool syncGrid = syncActive;
+    const int lockMargin = (int) std::ceil (kXfadeMaxMs * 0.001 * sr) + 1;
 
     for (int i = 0; i < ns; ++i)
     {
@@ -619,8 +645,12 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
         bool boundary = forceBoundary;
         forceBoundary = false;
 
+        // a seam that has started to skip its fade is counting on this window closing on
+        // time, so a time change that late moves the next window instead
+        if (! syncGrid && windowEnd == 0 && periodLen - n <= lockMargin) windowEnd = juce::jmax (periodLen, n);
+
         if (syncGrid) { if (ppqNow >= nextBoundaryPpq - 1.0e-12) boundary = true; }
-        else          { if (n >= periodLen) boundary = true; }
+        else          { if (n >= (windowEnd > 0 ? windowEnd : periodLen)) boundary = true; }
 
         float x[2] { 0.0f, 0.0f };
         for (int ch = 0; ch < nch; ++ch) x[ch] = out[ch][i];
@@ -634,9 +664,15 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
         {
             if (syncGrid)
                 nextBoundaryPpq = (std::floor (ppqNow / divPpq + 1.0e-9) + 1.0) * divPpq;
-            launchChain (n, rEff, fb);
+            closeWindow (n, rEff, fb);
             n = 0;
+            windowEnd = 0;
         }
+
+        // how long the window being recorded will be, which decides the newest chain's seams
+        const int openWindowLen = syncGrid
+            ? n + juce::jmax (1, (int) std::ceil ((nextBoundaryPpq - 1.0e-12 - ppqNow) / ppqPerSample))
+            : windowEnd > 0 ? windowEnd : juce::jmax (periodLen, n + 1);
 
         float wetSum[2] { 0.0f, 0.0f };
         int live = 0;
@@ -661,14 +697,17 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
             }
             else
             {
-                // At rate 1 a repetition is handed over sample-exactly: the chain launched one
-                // period later starts on the very next recorded sample at the same gain. Only a
-                // last repetition, which nothing follows, has to fade its end.
+                // At rate 1 a repetition can be handed over sample-exactly: the next window's
+                // chain starts its own on the very next recorded sample at the same gain. That
+                // holds for a forward seam between equally long windows and nowhere else.
                 const bool unity = std::abs (rate - 1.0) < kUnityEpsilon;
+                const bool alignNext = ci == prevChain ? openWindowLen == c.len : c.alignNext;
+                const bool seamOut = unity && ! c.reverse && alignNext
+                                     && ringClock - dirChangeClock > (juce::int64) c.elapsed;
                 double a = (double) maxLen;
-                if (! unity || c.lastRep)
+                if (! seamOut)
                     a = std::min (a, ((double) c.len - c.pos) / std::max (rate, 1.0e-6));
-                if (! unity)
+                if (! unity || ! c.seamIn)
                     a = std::min (a, c.elapsed);
                 envd = raisedCos (a / c.xfade);
             }
@@ -702,7 +741,7 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
 
             if (c.pos >= (double) c.len)
             {
-                if (c.lastRep) retireChain (ci);
+                if (c.lastRep) { c.active = false; c.env = 0.0f; }
                 else { c.pos -= (double) c.len; startChainRep (ci, c.rep + 1, c.gain * (double) fb, rEff, fb); }
             }
         }
@@ -783,6 +822,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 v.fadeOut = true;
 
         dirChangedSeen = true;
+        dirChangeClock = ringClock;
         lastDirection = settings.direction;
     }
 
