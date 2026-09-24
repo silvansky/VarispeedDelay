@@ -97,6 +97,7 @@ void DelayEngine::reset()
     prevWindowLen = 0;
     prevChain = -1;
     windowEnd = 0;
+    windowPeak = 0.0f;
     dirChangeClock = ringClock - (juce::int64) ringLen;
 
     genCounter = 0;
@@ -186,7 +187,8 @@ double DelayEngine::chainTailSeconds() const
         total += dur;
         if (total >= (double) ringLen) { total = (double) ringLen; break; }
     }
-    return total / sr;
+    // the last window is heard only once it has closed, a period after its input
+    return (tLatched + total) / sr;
 }
 
 void DelayEngine::updateTail()
@@ -528,7 +530,7 @@ void DelayEngine::retireChain (int index)
 }
 
 /** Two slots are kept clear of sounding chains so a launch always has somewhere to go and
-    the chain it displaces can still fade out. */
+    the chain it displaces - the quietest - can still fade out. */
 int DelayEngine::allocChain()
 {
     int sounding = 0;
@@ -536,12 +538,20 @@ int DelayEngine::allocChain()
 
     if (sounding >= kMaxChains - 2)
     {
-        int oldest = -1;
+        int quietest = -1;
+        double quietestLevel = 0.0;
         for (int i = 0; i < kMaxChains; ++i)
-            if (chains[i].active && ! chains[i].retiring
-                && (oldest < 0 || chains[i].order < chains[oldest].order))
-                oldest = i;
-        if (oldest >= 0) retireChain (oldest);
+        {
+            const Chain& c = chains[i];
+            if (! c.active || c.retiring) continue;
+            const double level = std::abs (c.gain) * (double) c.env;
+            if (quietest < 0 || level < quietestLevel)
+            {
+                quietest = i;
+                quietestLevel = level;
+            }
+        }
+        if (quietest >= 0) retireChain (quietest);
     }
 
     for (int i = 0; i < kMaxChains; ++i)
@@ -604,17 +614,21 @@ int DelayEngine::launchChain (int len, double rEff, float fb, bool alignPrev, in
 }
 
 /** Windows are contiguous, so at rate 1 a chain's repetition j ends exactly where the next
-    window's starts - but only if both windows are equally long. */
+    window's starts - but only if both windows are equally long. A silent window launches
+    nothing, and what it would have played is the silence either side of it expects anyway. */
 void DelayEngine::closeWindow (int len, double rEff, float fb)
 {
+    const bool silent = windowPeak < kChainSilence;
+    windowPeak = 0.0f;
+
     const int clamped = juce::jmin (len, ringLen);
     if (prevChain >= 0 && chains[prevChain].order == prevChainOrder)
-        chains[prevChain].alignNext = chains[prevChain].len == clamped;
+        chains[prevChain].alignNext = silent || chains[prevChain].len == clamped;
 
     const bool alignPrev = prevWindowLen == 0 || prevWindowLen == clamped;
-    prevChain = launchChain (len, rEff, fb, alignPrev, prevWindowLen);
+    prevChain = silent ? -1 : launchChain (len, rEff, fb, alignPrev, prevWindowLen);
     prevChainOrder = chainOrder;
-    prevWindowLen = clamped;
+    prevWindowLen = silent ? 0 : clamped;
 }
 
 /** CHAIN: the input grid stays at T and every window that closes on it starts a chain of its
@@ -765,7 +779,11 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
 
         if (ringLen > 0)
         {
-            for (int ch = 0; ch < nch; ++ch) ring.getWritePointer (ch)[ringWrite] = x[ch];
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                ring.getWritePointer (ch)[ringWrite] = x[ch];
+                windowPeak = std::max (windowPeak, std::abs (x[ch]));
+            }
             if (++ringWrite >= ringLen) ringWrite = 0;
             ++ringClock;
         }

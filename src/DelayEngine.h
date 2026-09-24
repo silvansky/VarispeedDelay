@@ -34,12 +34,14 @@ inline constexpr double kTailGenerations = 10.0;
 inline constexpr double kUnityEpsilon    = 1.0e-4;
 inline constexpr double kClipHoldMs      = 120.0;   // so a 30 Hz UI cannot miss a hit
 inline constexpr double kResetDeclickMs  = 2.0;    // ramp of the killed tail, output only
-inline constexpr int    kMaxChains       = 12;     // CHAIN slots; two are kept free for fades
 inline constexpr int    kMaxChainReps    = 12;     // repetitions one chain will ever play
+inline constexpr int    kMaxChains       = 2 * kMaxChainReps + 2;  // every one down to 0.5x
+                                                   // Stable, plus two kept free for fades
 inline constexpr double kChainRingSec    = 60.0;   // input history CHAIN replays its windows from
 inline constexpr double kMinChainRepMs   = 5.0;    // a shorter repetition is not worth sounding,
                                                    // unless the window itself is that short
 inline constexpr double kChainGainFloor  = 0.001;  // nor a quieter one, -60 dB
+inline constexpr float  kChainSilence    = 1.0e-5f; // a window below -100 dB launches no chain
 
 static_assert (kMaxChainReps <= kNumEqStages, "every repetition needs its own EQ stage");
 
@@ -199,7 +201,8 @@ private:
     int   ringLen = 0, ringWrite = 0, chainOrder = 0;
     juce::int64 ringClock = 0;
     juce::int64 dirChangeClock = 0;
-    int   prevWindowLen = 0, prevChain = -1, prevChainOrder = 0;
+    int   prevWindowLen = 0, prevChain = -1, prevChainOrder = 0;   // 0: nothing to hand over from
+    float windowPeak = 0.0f;
     int   windowEnd = 0;   // the open window's length once it is too close to closing to move
     double ratePow[kMaxChainReps + 1] {};
 

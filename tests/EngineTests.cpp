@@ -955,6 +955,35 @@ void testChainRepetitionsAccelerateAndStop()
     check (r.peak (2 * T + burst, 5 * T) < 1.0e-4f, "the chain ends by itself");
 }
 
+void testChainPlaysEveryRepetition()
+{
+    // at 1x every repetition lasts T, so twelve of them overlap twelve later chains - the
+    // pool has to hold them all, and silence afterwards must not displace them
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 1.0;
+    r.s.feedback = 0.95f;
+    r.s.clip = false;
+    r.apply();
+
+    const int T = (int) std::round (0.1 * kSr);
+    const int hit = T * 5 + 100;
+    r.run (hit + 1, [hit] (int i) { return i == hit ? 1.0f : 0.0f; });
+    r.runSilence (T * 15);
+
+    for (int j = 1; j <= kMaxChainReps; ++j)
+        checkNear (r.peak (hit + j * T - 10, hit + j * T + 10), std::pow (0.95, j - 1), 1.0e-3,
+                   "repetition j arrives at fb^(j-1)");
+    check (r.peak (hit + (kMaxChainReps + 1) * T - 10, r.written) < 1.0e-5f, "and no more");
+
+    const int lastOut = [&r]
+    {
+        for (int i = r.written - 1; i > 0; --i) if (std::abs (r.left[(size_t) i]) > 1.0e-6f) return i;
+        return 0;
+    }();
+    check (r.engine.getTailSeconds() * kSr >= lastOut - hit, "the tail covers the last repetition");
+}
+
 void testChainSeamsDoNotStep()
 {
     // at r = 1 only a forward seam between two equally long windows may skip its fade;
@@ -1465,6 +1494,7 @@ int main()
     test ("CHAIN does not depend on the host buffer", testChainIsIndependentOfBlockSize);
     test ("CHAIN repetitions accelerate and stop", testChainRepetitionsAccelerateAndStop);
     test ("CHAIN seams do not step", testChainSeamsDoNotStep);
+    test ("CHAIN plays every repetition", testChainPlaysEveryRepetition);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
