@@ -109,10 +109,10 @@ void DelayEngine::reset()
     declickLeft = 0;
     for (auto& v : lastWetOut) v = 0.0f;
 
-    tLatched = juce::jlimit ((double) minPeriod, (double) maxLen, settings.timeMs * 0.001 * sr);
+    tLatched = juce::jlimit ((double) periodFloor(), (double) maxLen, settings.timeMs * 0.001 * sr);
     tTarget = tEff = tLatched;
     bendGoal.setCurrentAndTargetValue (tLatched);
-    periodLen = juce::jmax (minPeriod, (int) std::round (tEff));
+    periodLen = juce::jmax (periodFloor(), (int) std::round (tEff));
     lastBend = 1.0;
 
     forceFadeCounter = 0;
@@ -174,7 +174,7 @@ bool DelayEngine::transportRestarted (int numSamples)
 double DelayEngine::chainTailSeconds() const
 {
     const double r = juce::jlimit (kMinSpeed, kMaxSpeed, settings.speed);
-    const double minRep = kMinChainRepMs * 0.001 * sr;
+    const double minRep = chainMinRep ((int) tLatched);
     double total = 0.0, rate = 1.0, gain = 1.0;
 
     for (int j = 1; j <= kMaxChainReps; ++j)
@@ -222,7 +222,7 @@ void DelayEngine::updateTiming (int numSamples)
     divPpq = juce::jmax (1.0e-6, quarters);
 
     double newT = wantSync ? (60.0 / bpm * quarters * sr) : (settings.timeMs * 0.001 * sr);
-    newT = juce::jlimit ((double) minPeriod, (double) maxLen, newT);
+    newT = juce::jlimit ((double) periodFloor(), (double) maxLen, newT);
 
     // REGRID re-splices on every latch, so it needs the relative deadband; anything finer
     // than a sample is float noise, and a fixed millisecond floor would make sub-millisecond
@@ -504,6 +504,18 @@ double DelayEngine::chainXfade (double dur) const noexcept
     return std::max (1.0, std::min (xf, dur * 0.5));
 }
 
+double DelayEngine::chainMinRep (int len) const noexcept
+{
+    return std::min (kMinChainRepMs * 0.001 * sr, 0.5 * (double) len);
+}
+
+/** CHAIN launches at most one window per sample and never opens a generation, so the host's
+    buffer size is no floor for it. */
+int DelayEngine::periodFloor() const noexcept
+{
+    return settings.spacing == Spacing::Chain ? 1 : minPeriod;
+}
+
 void DelayEngine::retireChain (int index)
 {
     Chain& c = chains[index];
@@ -565,7 +577,7 @@ void DelayEngine::startChainRep (int index, int rep, double gain, double rEff, f
     const int next = rep + 1;
     const double nextRate = stable ? rEff : std::pow (rEff, (double) next);
     c.lastRep = next > kMaxChainReps
-                || (double) c.len / std::max (nextRate, 1.0e-6) < kMinChainRepMs * 0.001 * sr
+                || (double) c.len / std::max (nextRate, 1.0e-6) < chainMinRep (c.len)
                 || std::abs (gain * (double) fb) < kChainGainFloor;
 }
 
@@ -639,7 +651,7 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
         ratePow[0] = 1.0;
         for (int j = 1; j <= kMaxChainReps; ++j) ratePow[j] = ratePow[j - 1] * rEff;
 
-        periodLen = juce::jmax (minPeriod, (int) std::round (tEff));
+        periodLen = juce::jmax (1, (int) std::round (tEff));
 
         const double ppqNow = syncGrid ? ppqBlockStart + i * ppqPerSample : 0.0;
         bool boundary = forceBoundary;

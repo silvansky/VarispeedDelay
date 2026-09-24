@@ -37,7 +37,8 @@ inline constexpr double kResetDeclickMs  = 2.0;    // ramp of the killed tail, o
 inline constexpr int    kMaxChains       = 12;     // CHAIN slots; two are kept free for fades
 inline constexpr int    kMaxChainReps    = 12;     // repetitions one chain will ever play
 inline constexpr double kChainRingSec    = 60.0;   // input history CHAIN replays its windows from
-inline constexpr double kMinChainRepMs   = 5.0;    // a shorter repetition is not worth sounding
+inline constexpr double kMinChainRepMs   = 5.0;    // a shorter repetition is not worth sounding,
+                                                   // unless the window itself is that short
 inline constexpr double kChainGainFloor  = 0.001;  // nor a quieter one, -60 dB
 
 static_assert (kMaxChainReps <= kNumEqStages, "every repetition needs its own EQ stage");
@@ -182,6 +183,8 @@ private:
     int    allocChain();
     float  ringRead (int start, double offset, int ch) const noexcept;
     double chainXfade (double dur) const noexcept;
+    double chainMinRep (int len) const noexcept;
+    int    periodFloor() const noexcept;
     double chainTailSeconds() const;
 
     Settings  settings;

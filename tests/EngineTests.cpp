@@ -866,14 +866,15 @@ void testChainSpacing()
 void testChainIsIndependentOfBlockSize()
 {
     // the CHAIN grid is the delay time, never the host buffer, so two buffer sizes have to
-    // produce the same samples - this is the whole point of it above 1x
-    auto render = [] (int block)
+    // produce the same samples - this is the whole point of it above 1x, and at a delay
+    // shorter than either buffer
+    auto render = [] (int block, double timeMs)
     {
         DelayEngine e;
         DelayEngine::Settings s;
         s.spacing = Spacing::Chain;
         s.speed = 2.0;
-        s.timeMs = 200.0;
+        s.timeMs = timeMs;
         s.feedback = 0.8f;
         s.dry = 0.0f;
         s.wet = 1.0f;
@@ -897,14 +898,35 @@ void testChainIsIndependentOfBlockSize()
         return out;
     };
 
-    const auto small = render (64);
-    const auto large = render (1024);
-    const size_t n = juce::jmin (small.size(), large.size());
+    for (double timeMs : { 200.0, 5.0 })
+    {
+        const auto small = render (64, timeMs);
+        const auto large = render (1024, timeMs);
+        const size_t n = juce::jmin (small.size(), large.size());
 
-    double worst = 0.0;
-    for (size_t i = 0; i < n; ++i)
-        worst = juce::jmax (worst, (double) std::abs (small[i] - large[i]));
-    checkNear (worst, 0.0, 1.0e-6, "CHAIN sounds the same at 64 and 1024 samples");
+        double worst = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            worst = juce::jmax (worst, (double) std::abs (small[i] - large[i]));
+        checkNear (worst, 0.0, 1.0e-6, "CHAIN sounds the same at 64 and 1024 samples");
+    }
+
+    // a window shorter than kMinChainRepMs still feeds back at 1x
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.timeMs = 2.0;
+        r.s.feedback = 0.8f;
+        r.s.clip = false;
+        r.apply();
+
+        const int T = (int) std::round (0.002 * kSr);
+        const int hit = T * 50 + 10;
+        r.run (hit + 1, [hit] (int i) { return i == hit ? 1.0f : 0.0f; });
+        r.runSilence (T * 4);
+        checkNear (r.engine.getPeriodMs(), 2.0, 1.0e-6, "the period is the knob, not the buffer");
+        checkNear (r.peak (hit + T + T / 2, hit + 2 * T + T / 2), 0.8f, 0.02, "second repetition at fb");
+    }
 }
 
 void testChainRepetitionsAccelerateAndStop()
