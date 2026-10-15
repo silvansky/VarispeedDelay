@@ -101,7 +101,9 @@ Engine invariants worth knowing before changing it:
   and for the newest chain the length the open window will close at. Reversed repetitions, a
   fractional sync period, a regrid and a recent direction change all fade instead. A free
   window within `kXfadeMaxMs` of closing locks its end (`windowEnd`), because a seam that
-  has already skipped its fade is counting on it.
+  has already skipped its fade is counting on it. A speed change permanently disqualifies
+  existing chains from the unity bypass; `nonUnityClock` lets new chains recover it only
+  when their neighbouring windows also started after the change.
 - The clip and the EQ belong to the recycle path, so CHAIN applies neither to repetition 1.
   The EQ's j passes become one coefficient set per repetition index (`kNumEqStages`), which
   matches a cascade at each band centre but not in the skirts.
@@ -144,7 +146,9 @@ The invariants behind it:
 - Commits: imperative, short, no period.
 - JUCE Font API: `juce::FontOptions`, not the deprecated float constructor.
 - Spacing is a 3-choice parameter and "Chain" is appended last, so the indices saved by
-  earlier releases still mean what they meant.
+  earlier releases still mean what they meant. Normalized host automation does break:
+  Tape moves from 1.0 to 0.5 and Chain takes 1.0. This is accepted before v1.0 and documented
+  in README.md; do not confuse saved choice-index compatibility with automation compatibility.
 - **ASCII only in string literals.** `juce::String (const char*)` decodes as Latin-1, not
   UTF-8, so an em-dash or arrow in a UI string arrives as mojibake. Write `-`, not `—`.
   Comments are unaffected.

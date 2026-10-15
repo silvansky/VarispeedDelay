@@ -99,6 +99,7 @@ void DelayEngine::reset()
     windowEnd = 0;
     windowPeak = 0.0f;
     dirChangeClock = ringClock - (juce::int64) ringLen;
+    nonUnityClock = dirChangeClock;
 
     genCounter = 0;
     curSlot = 0;
@@ -582,7 +583,8 @@ void DelayEngine::startChainRep (int index, int rep, double gain, double rEff, f
 
     // at rate 1 the previous window's chain ends its repetition `rep` right here, and the
     // two only meet sample-exactly if they run the same way and are equally long
-    c.seamIn = ! c.reverse && c.alignPrev && ringClock - dirChangeClock > c.prevLen;
+    c.seamIn = ! c.reverse && c.alignPrev && ringClock - dirChangeClock > c.prevLen
+               && nonUnityClock < c.launch - c.prevLen;
 
     const int next = rep + 1;
     const double nextRate = stable ? rEff : std::pow (rEff, (double) next);
@@ -662,6 +664,7 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
         lastBend = m;
 
         const double rEff = juce::jlimit (0.01, 64.0, r * m);
+        if (std::abs (rEff - 1.0) > 0.0) nonUnityClock = ringClock;
         ratePow[0] = 1.0;
         for (int j = 1; j <= kMaxChainReps; ++j) ratePow[j] = ratePow[j - 1] * rEff;
 
@@ -726,7 +729,9 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
                 // At rate 1 a repetition can be handed over sample-exactly: the next window's
                 // chain starts its own on the very next recorded sample at the same gain. That
                 // holds for a forward seam between equally long windows and nowhere else.
-                const bool unity = std::abs (rate - 1.0) < kUnityEpsilon;
+                // Returning to 1x does not realign a chain that has already changed speed.
+                const bool unity = std::abs (rate - 1.0) < kUnityEpsilon
+                                   && nonUnityClock < c.launch;
                 const bool alignNext = ci == prevChain ? openWindowLen == c.len : c.alignNext;
                 const bool seamOut = unity && ! c.reverse && alignNext
                                      && ringClock - dirChangeClock > (juce::int64) c.elapsed;
@@ -765,10 +770,19 @@ void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int n
             c.pos += rate;
             c.elapsed += 1.0;
 
-            if (c.pos >= (double) c.len)
+            while (c.pos >= (double) c.len)
             {
-                if (c.lastRep) { c.active = false; c.env = 0.0f; }
-                else { c.pos -= (double) c.len; startChainRep (ci, c.rep + 1, c.gain * (double) fb, rEff, fb); }
+                // A live speed/mode change can invalidate the limit latched at rep start.
+                // Short windows can also cross more than one repetition in a sample.
+                const double nextRate = stable ? rEff : ratePow[juce::jmin (c.rep + 1, kMaxChainReps)];
+                if (c.lastRep || (double) c.len / std::max (nextRate, 1.0e-6) < chainMinRep (c.len))
+                {
+                    c.active = false;
+                    c.env = 0.0f;
+                    break;
+                }
+                c.pos -= (double) c.len;
+                startChainRep (ci, c.rep + 1, c.gain * (double) fb, rEff, fb);
             }
         }
 

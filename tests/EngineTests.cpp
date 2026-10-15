@@ -1048,6 +1048,65 @@ void testChainSeamsDoNotStep()
     }
 }
 
+void testChainFeedbackModeSwitch()
+{
+    // Put late Stable repetitions near the end of the ring before switching to Raw.
+    // At 4x, advancing repetition 11 then jumps millions of samples in one step.
+    // Run this under ASan too: a finite result alone cannot prove the read was in bounds.
+    for (auto dir : { Direction::Forward, Direction::Reverse, Direction::Alternate })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.fbType = FbType::Stable;
+        r.s.direction = dir;
+        r.s.speed = 4.0;
+        r.s.feedback = 0.95f;
+        r.run ((int) (kSr * 40.35), [] (int i) { return 0.1f * (float) std::sin (i * 0.02); });
+
+        const int mark = r.written;
+        r.s.fbType = FbType::Raw;
+        r.runSilence ((int) kSr);
+        check (r.allFinite(), "Stable to Raw stays finite with late repetitions active");
+        check (r.peak (mark + (int) (kSr * 0.5), r.written) < 1.0e-6f,
+               "accelerated chains finish without reading unrelated history");
+    }
+}
+
+void testChainUnityAfterSpeedChange()
+{
+    auto tone = [] (int i) { return 0.1f * (float) std::sin (i * 0.01); };
+    for (auto type : { FbType::Raw, FbType::Stable })
+        for (double from : { 0.25, 0.5, 0.8, 1.5, 2.0, 4.0 })
+        {
+            Rig r;
+            r.s.spacing = Spacing::Chain;
+            r.s.fbType = type;
+            r.s.speed = from;
+            r.s.feedback = 0.7f;
+            r.s.clip = false;
+            r.run ((int) kSr, tone);
+
+            const int mark = r.written;
+            r.s.speed = 1.0;
+            r.run ((int) (kSr * 3), tone);
+            check (r.maxStep (mark, r.written) < 0.02, "misaligned chains keep fading after returning to 1x");
+        }
+
+    // New windows must recover the sample-exact unity path once their neighbours are clean.
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 0.5;
+    r.s.feedback = 0.0f;
+    r.s.clip = false;
+    r.run ((int) kSr, tone);
+    r.s.speed = 1.0;
+    r.run ((int) kSr, tone);
+    double worst = 0.0;
+    for (int i = (int) (kSr * 1.5); i < r.written; ++i)
+        worst = std::max (worst, (double) std::abs (r.left[(size_t) i] - tone (i - (int) (kSr * 0.1))));
+    checkNear (worst, 0.0, 1.0e-6, "clean chains resume seamless unity playback");
+}
+
 void testNoAllocationInProcess()
 {
     DelayEngine e;
@@ -1495,6 +1554,8 @@ int main()
     test ("CHAIN repetitions accelerate and stop", testChainRepetitionsAccelerateAndStop);
     test ("CHAIN seams do not step", testChainSeamsDoNotStep);
     test ("CHAIN plays every repetition", testChainPlaysEveryRepetition);
+    test ("CHAIN survives a feedback mode switch", testChainFeedbackModeSwitch);
+    test ("CHAIN is clean after returning to unity", testChainUnityAfterSpeedChange);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

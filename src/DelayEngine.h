@@ -201,6 +201,7 @@ private:
     int   ringLen = 0, ringWrite = 0, chainOrder = 0;
     juce::int64 ringClock = 0;
     juce::int64 dirChangeClock = 0;
+    juce::int64 nonUnityClock = 0;
     int   prevWindowLen = 0, prevChain = -1, prevChainOrder = 0;   // 0: nothing to hand over from
     float windowPeak = 0.0f;
     int   windowEnd = 0;   // the open window's length once it is too close to closing to move
