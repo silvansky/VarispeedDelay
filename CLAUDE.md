@@ -50,6 +50,7 @@ crossfade rules, parameter table, phases. `USAGE.md` documents the accepted beha
 
 ```
 src/DelayEngine.{h,cpp}    generation ring, voice pool, periods, fades, bend, sync, clip
+                           plus CHAIN's input ring and chain pool (processChain)
 src/Voice.h                per-voice state
 src/GraphicEQ.{h,cpp}      7 x stereo RBJ peaking biquad, POD coefficients
 src/Presets.{h,cpp}        embedded + user presets, reset-then-overlay apply
@@ -83,6 +84,29 @@ Engine invariants worth knowing before changing it:
   countdowns, so a rate change mid-fade un-fades correctly.
 - Raw's recycle write ends with the audible tap; Stable's is a unity copy exactly as long
   as its source, so it outlives the audible tap at speeds above 1.
+- CHAIN does not use any of the above. It records the dry input into one 60 s ring and gives
+  every window that closes on the grid its own chain: repetition j is that window read at
+  `r^j` with gain `fb^(j-1)`, so nothing is recycled and nothing can run away. A chain ends
+  at `kMaxChainReps`, at `kMinChainRepMs` (or half its window, if that is shorter), or at
+  `kChainGainFloor`. A window below `kChainSilence` launches no chain, so silence never
+  displaces a sounding one. `kMaxChains` holds every repetition down to 0.5x Stable, and
+  `allocChain` keeps two slots free so a launch can always displace the quietest chain and
+  still let it fade. The period floor is one sample, not the host buffer (`periodFloor`).
+  `reset()` deliberately does not clear the ring - the first window after a reset is
+  recorded from scratch, and clearing 23 MB on the audio thread is not free.
+- At `r = 1` CHAIN is sample-identical to GRID, and the test asserts it. That works because a
+  repetition is handed over between *chains*, not within one: repetition j of one window ends
+  on the sample where the next window's repetition j starts, so neither end is faded. That
+  holds only for a forward seam between two equally long windows - `alignPrev`/`alignNext`,
+  and for the newest chain the length the open window will close at. Reversed repetitions, a
+  fractional sync period, a regrid and a recent direction change all fade instead. A free
+  window within `kXfadeMaxMs` of closing locks its end (`windowEnd`), because a seam that
+  has already skipped its fade is counting on it. A speed change permanently disqualifies
+  existing chains from the unity bypass; `nonUnityClock` lets new chains recover it only
+  when their neighbouring windows also started after the change.
+- The clip and the EQ belong to the recycle path, so CHAIN applies neither to repetition 1.
+  The EQ's j passes become one coefficient set per repetition index (`kNumEqStages`), which
+  matches a cascade at each band centre but not in the skirts.
 - Direction changes only the audible tap; what the *recycle* tap reads is what decides
   whether the buffer flips, and that is the whole difference between REV and ALT. Reverse
   latches its source at the boundary, where the generation is always exactly `periodLen`
@@ -121,6 +145,10 @@ The invariants behind it:
 - Self-documenting code, no comments unless critical. Minimal diffs.
 - Commits: imperative, short, no period.
 - JUCE Font API: `juce::FontOptions`, not the deprecated float constructor.
+- Spacing is a 3-choice parameter and "Chain" is appended last, so the indices saved by
+  earlier releases still mean what they meant. Normalized host automation does break:
+  Tape moves from 1.0 to 0.5 and Chain takes 1.0. This is accepted before v1.0 and documented
+  in README.md; do not confuse saved choice-index compatibility with automation compatibility.
 - **ASCII only in string literals.** `juce::String (const char*)` decodes as Latin-1, not
   UTF-8, so an em-dash or arrow in a UI string arrives as mojibake. Write `-`, not `—`.
   Comments are unaffected.

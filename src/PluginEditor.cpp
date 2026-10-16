@@ -396,8 +396,10 @@ void EditorContent::buildControls()
         "Lock the period to the host grid instead of the time knob", &drawNoteIcon);
     timeModeSwitch = std::make_unique<ChoiceSwitch> (*pMode, juce::StringArray { "REGRID", "BEND" },
         "REGRID snaps to the new time and leaves the tail alone. BEND bends everything sounding");
-    spacingSwitch = std::make_unique<ChoiceSwitch> (*pSpacing, juce::StringArray { "GRID", "TAPE" },
-        "GRID keeps repetitions on the delay grid. TAPE starts each one when the last ends");
+    spacingSwitch = std::make_unique<ChoiceSwitch> (*pSpacing,
+        juce::StringArray { "GRID", "TAPE", "CHAIN" },
+        "GRID keeps repetitions on the delay grid. TAPE starts each one when the last ends. "
+        "CHAIN gives every recorded window its own run of repetitions");
     directionSwitch = std::make_unique<ChoiceSwitch> (
         *pDir, juce::StringArray { "FWD", "REV", "ALT" },
         "FWD plays each repetition forward. REV plays every one backwards. ALT flips every other one");
@@ -687,8 +689,8 @@ void EditorContent::resized()
     timeField->setBounds (126, 96, 80, 20);
     divBox.setBounds (216, 98, 58, 20);
     timeKnob->setBounds (112, 142, 80, 80);
-    spacingSwitch->setBounds (24, 242, 83, 16);
-    timeModeSwitch->setBounds (156, 242, 105, 16);
+    spacingSwitch->setBounds (24, 242, 116, 16);    // three segments, so wider than the sheet's
+    timeModeSwitch->setBounds (163, 242, 105, 16);
 
     // ---- SPEED ------------------------------------------------------------
     speedField->setBounds (356, 96, 130, 26);

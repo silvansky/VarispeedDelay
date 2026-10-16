@@ -20,14 +20,18 @@ void GraphicEQ::setGainDb (int band, float db) noexcept
 void GraphicEQ::updateCoefficients() noexcept
 {
     for (int b = 0; b < kNumEqBands; ++b)
-        if (dirty[b]) { computeBand (b); dirty[b] = false; }
+        if (dirty[b])
+        {
+            for (int stage = 0; stage < kNumEqStages; ++stage) computeBand (b, stage);
+            dirty[b] = false;
+        }
 }
 
-void GraphicEQ::computeBand (int band) noexcept
+void GraphicEQ::computeBand (int band, int stage) noexcept
 {
     const double nyquist = sr * 0.5;
     const double f = std::min ((double) bandFreq[band], nyquist * 0.95);
-    const double A = std::pow (10.0, gainDb[band] / 40.0);
+    const double A = std::pow (10.0, (double) gainDb[band] * (stage + 1) / 40.0);
     const double w0 = 2.0 * 3.14159265358979323846 * f / sr;
     const double alpha = std::sin (w0) / (2.0 * (double) bandQ);
     const double cw = std::cos (w0);
@@ -39,7 +43,7 @@ void GraphicEQ::computeBand (int band) noexcept
     const double a1 = -2.0 * cw;
     const double a2 = 1.0 - alpha / A;
 
-    Biquad& k = c[band];
+    Biquad& k = c[stage][band];
     k.b0 = (float) (b0 / a0);
     k.b1 = (float) (b1 / a0);
     k.b2 = (float) (b2 / a0);

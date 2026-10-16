@@ -801,6 +801,312 @@ void testUnityAfterSpeedChange()
     }
 }
 
+//==============================================================================
+void testChainSpacing()
+{
+    // CHAIN unrolls the feedback loop: every recorded window gets its own chain of
+    // repetitions instead of one recycled buffer. At r = 1 that has to be the very same
+    // delay - the terms are just summed in a different order. Keep the Rig's prepared time
+    // so no regrid splice fires, and stay inside the concurrency cap so nothing truncates.
+    auto render = [] (Spacing sp)
+    {
+        Rig r;
+        r.s.spacing = sp;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.clip = false;
+        r.apply();
+        r.run ((int) (kSr * 1.0), [] (int i) { return 0.3f * (float) std::sin (i * 0.01); });
+        return r.left;
+    };
+
+    const auto grid = render (Spacing::Grid);
+    const auto chain = render (Spacing::Chain);
+    check (grid.size() == chain.size(), "same length");
+
+    double worst = 0.0;
+    for (size_t i = 0; i < grid.size(); ++i)
+        worst = juce::jmax (worst, (double) std::abs (grid[i] - chain[i]));
+    checkNear (worst, 0.0, 1.0e-5, "CHAIN == GRID at r = 1");
+
+    // feedback is the recycle gain, so the first repetition still arrives at full level
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.0f;
+        r.apply();
+
+        const int T = (int) std::round (0.1 * kSr);
+        r.run (T, [] (int i) { return i == 100 ? 1.0f : 0.0f; });
+        r.runSilence (T * 3);
+
+        checkNear (r.firstNonZero (T / 2, T * 3), T + 100, 2.0, "delayed by exactly T");
+        checkNear (r.peak (T, T * 2), 1.0f, 0.02, "unity gain at fb 0");
+        check (r.peak (T * 2, T * 3) < 1.0e-5f, "no second repeat at fb 0");
+    }
+
+    // the grid never runs away from the knob, at any speed, and the pool holds
+    for (double speed : { 0.25, 0.5, 1.5, 2.0, 4.0 })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = speed;
+        r.s.feedback = 0.9f;
+        r.apply();
+        r.run ((int) (kSr * 6), [] (int i) { return 0.4f * (float) std::sin (i * 0.02); });
+
+        check (r.allFinite(), "chain stays finite at every speed");
+        checkNear (r.engine.getPeriodMs(), 100.0, 1.0e-6, "the period is always the knob");
+        check (r.engine.maxConcurrentVoices() <= kMaxChains, "chain pool respected");
+        check (r.engine.getTailSeconds() > 0.0, "tail is reported");
+    }
+}
+
+void testChainIsIndependentOfBlockSize()
+{
+    // the CHAIN grid is the delay time, never the host buffer, so two buffer sizes have to
+    // produce the same samples - this is the whole point of it above 1x, and at a delay
+    // shorter than either buffer
+    auto render = [] (int block, double timeMs)
+    {
+        DelayEngine e;
+        DelayEngine::Settings s;
+        s.spacing = Spacing::Chain;
+        s.speed = 2.0;
+        s.timeMs = timeMs;
+        s.feedback = 0.8f;
+        s.dry = 0.0f;
+        s.wet = 1.0f;
+        e.setSettings (s);
+        e.prepare (kSr, block, 2);
+
+        std::vector<float> out;
+        juce::AudioBuffer<float> buf (2, block);
+        int idx = 0;
+        while ((int) out.size() < (int) (kSr * 2))
+        {
+            for (int i = 0; i < block; ++i)
+            {
+                const float x = 0.4f * (float) std::sin (idx++ * 0.02);
+                buf.setSample (0, i, x);
+                buf.setSample (1, i, x);
+            }
+            e.process (buf);
+            for (int i = 0; i < block; ++i) out.push_back (buf.getSample (0, i));
+        }
+        return out;
+    };
+
+    for (double timeMs : { 200.0, 5.0 })
+    {
+        const auto small = render (64, timeMs);
+        const auto large = render (1024, timeMs);
+        const size_t n = juce::jmin (small.size(), large.size());
+
+        double worst = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            worst = juce::jmax (worst, (double) std::abs (small[i] - large[i]));
+        checkNear (worst, 0.0, 1.0e-6, "CHAIN sounds the same at 64 and 1024 samples");
+    }
+
+    // a window shorter than kMinChainRepMs still feeds back at 1x
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.timeMs = 2.0;
+        r.s.feedback = 0.8f;
+        r.s.clip = false;
+        r.apply();
+
+        const int T = (int) std::round (0.002 * kSr);
+        const int hit = T * 50 + 10;
+        r.run (hit + 1, [hit] (int i) { return i == hit ? 1.0f : 0.0f; });
+        r.runSilence (T * 4);
+        checkNear (r.engine.getPeriodMs(), 2.0, 1.0e-6, "the period is the knob, not the buffer");
+        checkNear (r.peak (hit + T + T / 2, hit + 2 * T + T / 2), 0.8f, 0.02, "second repetition at fb");
+    }
+}
+
+void testChainRepetitionsAccelerateAndStop()
+{
+    // one window, 2x: its repetitions last T/2, T/4, T/8 ... so they start at T, T + T/2,
+    // T + 3T/4 ... and the chain runs out just as the next window's would arrive
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 2.0;
+    r.s.feedback = 0.9f;
+    r.apply();
+
+    const int T = (int) std::round (0.1 * kSr);
+    const int burst = T / 10;
+    r.run (T, [burst] (int i) { return i < burst ? 0.4f * (float) std::sin (i * 0.05) : 0.0f; });
+    r.runSilence (T * 5);
+
+    const int starts[] { T, T + T / 2, T + T / 2 + T / 4, T + T / 2 + T / 4 + T / 8 };
+    for (int k = 0; k < 4; ++k)
+    {
+        const int hit = r.firstNonZero (starts[k] - burst / 2, starts[k] + burst, 1.0e-4f);
+        checkNear (hit, starts[k], 24.0, "repetition starts where the last one ended");
+    }
+
+    // T/2 + T/4 + ... = T, so nothing of this window is left by the time 2T comes round
+    check (r.peak (2 * T + burst, 5 * T) < 1.0e-4f, "the chain ends by itself");
+}
+
+void testChainPlaysEveryRepetition()
+{
+    // at 1x every repetition lasts T, so twelve of them overlap twelve later chains - the
+    // pool has to hold them all, and silence afterwards must not displace them
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 1.0;
+    r.s.feedback = 0.95f;
+    r.s.clip = false;
+    r.apply();
+
+    const int T = (int) std::round (0.1 * kSr);
+    const int hit = T * 5 + 100;
+    r.run (hit + 1, [hit] (int i) { return i == hit ? 1.0f : 0.0f; });
+    r.runSilence (T * 15);
+
+    for (int j = 1; j <= kMaxChainReps; ++j)
+        checkNear (r.peak (hit + j * T - 10, hit + j * T + 10), std::pow (0.95, j - 1), 1.0e-3,
+                   "repetition j arrives at fb^(j-1)");
+    check (r.peak (hit + (kMaxChainReps + 1) * T - 10, r.written) < 1.0e-5f, "and no more");
+
+    const int lastOut = [&r]
+    {
+        for (int i = r.written - 1; i > 0; --i) if (std::abs (r.left[(size_t) i]) > 1.0e-6f) return i;
+        return 0;
+    }();
+    check (r.engine.getTailSeconds() * kSr >= lastOut - hit, "the tail covers the last repetition");
+}
+
+void testChainSeamsDoNotStep()
+{
+    // at r = 1 only a forward seam between two equally long windows may skip its fade;
+    // a reversed repetition, a regrid and a fractional sync period all have to fade instead
+    auto sine = [] (int i) { return 0.3f * (float) std::sin (i * 0.01); };
+    constexpr double kMaxSeamStep = 0.03;
+
+    for (auto dir : { Direction::Reverse, Direction::Alternate })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.7f;
+        r.s.direction = dir;
+        r.apply();
+        r.run ((int) (kSr * 1.5), sine);
+        check (r.maxStep (0, r.written) < kMaxSeamStep, "reversed seams fade at r = 1");
+    }
+
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.8f;
+        r.apply();
+        r.run ((int) (kSr * 0.5), sine);
+        r.s.timeMs = 130.0;
+        r.run ((int) (kSr * 1.5), sine);
+        check (r.maxStep (0, r.written) < kMaxSeamStep, "regrid seams fade at r = 1");
+    }
+
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.speed = 1.0;
+        r.s.feedback = 0.8f;
+        r.s.sync = true;
+        r.s.divIndex = 2;     // 1/16
+        r.apply();
+
+        DelayEngine::Transport t;
+        t.valid = true;
+        t.playing = true;
+        t.bpm = 121.0;        // 5950.4 samples, so windows alternate in length
+
+        const double ppqPerSample = t.bpm / 60.0 / kSr;
+        juce::AudioBuffer<float> buf (2, kBlock);
+        std::vector<float> out;
+        int idx = 0;
+        for (int b = 0; b < (int) (kSr * 1.5) / kBlock; ++b)
+        {
+            t.ppq = idx * ppqPerSample;
+            for (int i = 0; i < kBlock; ++i) { const float x = sine (idx++); buf.setSample (0, i, x); buf.setSample (1, i, x); }
+            r.engine.setTransport (t);
+            r.engine.process (buf);
+            for (int i = 0; i < kBlock; ++i) out.push_back (buf.getSample (0, i));
+        }
+
+        double worst = 0.0;
+        for (size_t i = 1; i < out.size(); ++i) worst = juce::jmax (worst, (double) std::abs (out[i] - out[i - 1]));
+        check (worst < kMaxSeamStep, "fractional sync seams fade at r = 1");
+    }
+}
+
+void testChainFeedbackModeSwitch()
+{
+    // Put late Stable repetitions near the end of the ring before switching to Raw.
+    // At 4x, advancing repetition 11 then jumps millions of samples in one step.
+    // Run this under ASan too: a finite result alone cannot prove the read was in bounds.
+    for (auto dir : { Direction::Forward, Direction::Reverse, Direction::Alternate })
+    {
+        Rig r;
+        r.s.spacing = Spacing::Chain;
+        r.s.fbType = FbType::Stable;
+        r.s.direction = dir;
+        r.s.speed = 4.0;
+        r.s.feedback = 0.95f;
+        r.run ((int) (kSr * 40.35), [] (int i) { return 0.1f * (float) std::sin (i * 0.02); });
+
+        const int mark = r.written;
+        r.s.fbType = FbType::Raw;
+        r.runSilence ((int) kSr);
+        check (r.allFinite(), "Stable to Raw stays finite with late repetitions active");
+        check (r.peak (mark + (int) (kSr * 0.5), r.written) < 1.0e-6f,
+               "accelerated chains finish without reading unrelated history");
+    }
+}
+
+void testChainUnityAfterSpeedChange()
+{
+    auto tone = [] (int i) { return 0.1f * (float) std::sin (i * 0.01); };
+    for (auto type : { FbType::Raw, FbType::Stable })
+        for (double from : { 0.25, 0.5, 0.8, 1.5, 2.0, 4.0 })
+        {
+            Rig r;
+            r.s.spacing = Spacing::Chain;
+            r.s.fbType = type;
+            r.s.speed = from;
+            r.s.feedback = 0.7f;
+            r.s.clip = false;
+            r.run ((int) kSr, tone);
+
+            const int mark = r.written;
+            r.s.speed = 1.0;
+            r.run ((int) (kSr * 3), tone);
+            check (r.maxStep (mark, r.written) < 0.02, "misaligned chains keep fading after returning to 1x");
+        }
+
+    // New windows must recover the sample-exact unity path once their neighbours are clean.
+    Rig r;
+    r.s.spacing = Spacing::Chain;
+    r.s.speed = 0.5;
+    r.s.feedback = 0.0f;
+    r.s.clip = false;
+    r.run ((int) kSr, tone);
+    r.s.speed = 1.0;
+    r.run ((int) kSr, tone);
+    double worst = 0.0;
+    for (int i = (int) (kSr * 1.5); i < r.written; ++i)
+        worst = std::max (worst, (double) std::abs (r.left[(size_t) i] - tone (i - (int) (kSr * 0.1))));
+    checkNear (worst, 0.0, 1.0e-6, "clean chains resume seamless unity playback");
+}
+
 void testNoAllocationInProcess()
 {
     DelayEngine e;
@@ -831,7 +1137,8 @@ void testNoAllocationInProcess()
         s.eqOn     = (b % 3) == 0;
         s.sync     = (b % 2) == 0;
         s.divIndex = b % numDivisions();
-        s.spacing  = (b % 11) == 0 ? Spacing::Tape : Spacing::Grid;
+        s.spacing  = (b % 11) == 0 ? Spacing::Tape
+                   : (b % 7) == 0  ? Spacing::Chain : Spacing::Grid;
         s.timeMode = (b % 13) == 0 ? TimeMode::Bend : TimeMode::Regrid;
         s.fbType   = (b % 17) == 0 ? FbType::Stable : FbType::Raw;
         s.direction = (Direction) (b % 3);
@@ -849,8 +1156,8 @@ void testNoAllocationInProcess()
         }
         e.process (buf);
 
-        DelayEngine::VoiceInfo info[kMaxVoices];
-        e.getVoiceSnapshot (info, kMaxVoices);
+        DelayEngine::VoiceInfo info[kMaxUiTaps];
+        e.getVoiceSnapshot (info, kMaxUiTaps);
         (void) e.getTailSeconds();
     }
 
@@ -1242,6 +1549,13 @@ int main()
     test ("ALT + STABLE is a lossless mirrored copy", testAlternateStableIsLossless);
     test ("reverse never reads unwritten samples", testReverseStaysInsideWhatIsWritten);
     test ("a direction switch mid-tail is click free", testDirectionSwitchIsClickFree);
+    test ("CHAIN spacing", testChainSpacing);
+    test ("CHAIN does not depend on the host buffer", testChainIsIndependentOfBlockSize);
+    test ("CHAIN repetitions accelerate and stop", testChainRepetitionsAccelerateAndStop);
+    test ("CHAIN seams do not step", testChainSeamsDoNotStep);
+    test ("CHAIN plays every repetition", testChainPlaysEveryRepetition);
+    test ("CHAIN survives a feedback mode switch", testChainFeedbackModeSwitch);
+    test ("CHAIN is clean after returning to unity", testChainUnityAfterSpeedChange);
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

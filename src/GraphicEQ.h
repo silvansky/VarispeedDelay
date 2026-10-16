@@ -7,6 +7,12 @@ namespace vspd
 
 inline constexpr int kNumEqBands = 7;
 
+/** CHAIN synthesises repetition j from the dry window instead of recycling, so the j passes
+    of EQ it would have collected are baked into one coefficient set per repetition index:
+    stage s carries (s + 1) x the band gain. Exact at each band centre, and the same shape
+    either side of it - a cascade of s identical peakings would have narrower skirts. */
+inline constexpr int kNumEqStages = 12;
+
 struct Biquad { float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f; };
 struct BiquadState { float s1 = 0.0f, s2 = 0.0f; };
 
@@ -28,11 +34,12 @@ public:
     void setGainDb (int band, float db) noexcept;
     void updateCoefficients() noexcept;
 
-    float process (EqState& st, float x, int ch) const noexcept
+    float process (EqState& st, float x, int ch, int stage = 0) const noexcept
     {
+        const int st8 = stage < 0 ? 0 : (stage >= kNumEqStages ? kNumEqStages - 1 : stage);
         for (int b = 0; b < kNumEqBands; ++b)
         {
-            const Biquad& k = c[b];
+            const Biquad& k = c[st8][b];
             BiquadState& s = st.s[b][ch];
             const float y = k.b0 * x + s.s1;
             s.s1 = k.b1 * x - k.a1 * y + s.s2;
@@ -43,12 +50,12 @@ public:
     }
 
 private:
-    void computeBand (int band) noexcept;
+    void computeBand (int band, int stage) noexcept;
 
     double sr = 44100.0;
     float gainDb[kNumEqBands] {};
     bool dirty[kNumEqBands] { true, true, true, true, true, true, true };
-    Biquad c[kNumEqBands];
+    Biquad c[kNumEqStages][kNumEqBands];
 };
 
 } // namespace vspd

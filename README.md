@@ -28,6 +28,14 @@ a different tape speed — pitch and duration change together.
 - resizable UI: pick a zoom or drag the corner; every value can be typed, shift-drag is
   fine control, double-click resets, and hovering anything explains it in the footer
 
+## Pre-release compatibility
+
+Compatibility-breaking changes are accepted before v1.0. Adding CHAIN changes the
+normalized Spacing automation values: TAPE moves from `1.0` to `0.5`, and CHAIN now uses
+`1.0`. Existing host automation (including VST3 automation) that selected TAPE at `1.0`
+will select CHAIN after upgrading. Update those automation points to TAPE in your host.
+GRID remains `0.0`; saved plugin state and presets retain their existing choice indices.
+
 ## Build
 
 JUCE comes in as a submodule, so clone recursively:

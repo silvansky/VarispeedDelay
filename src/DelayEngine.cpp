@@ -65,6 +65,14 @@ void DelayEngine::prepare (double sampleRate, int maxBlockSize, int nch)
     for (auto& g : gens)
         g.buf.setSize (numChannels, maxLen, false, true, false);
 
+    // CHAIN replays windows of dry input, so it needs history rather than generations. The
+    // ring is the whole memory budget: it decides how far back a chain can still read, and
+    // so how many can sound at once at long delay times.
+    ringLen = (int) std::ceil (kChainRingSec * sr);
+    ring.setSize (numChannels, ringLen, false, true, false);
+    ringWrite = 0;
+    ringClock = 0;
+
     eq.prepare (sr);
     speedSm.reset (sr, kSpeedGlideMs * 0.001);
     bendGoal.reset (sr, kTimeGlideMs * 0.001);
@@ -84,6 +92,14 @@ void DelayEngine::reset()
 {
     for (auto& g : gens) { g.buf.clear(); g.resetState(); }
     for (auto& v : voices) v = Voice{};
+    for (auto& c : chains) c = Chain{};
+    chainOrder = 0;
+    prevWindowLen = 0;
+    prevChain = -1;
+    windowEnd = 0;
+    windowPeak = 0.0f;
+    dirChangeClock = ringClock - (juce::int64) ringLen;
+    nonUnityClock = dirChangeClock;
 
     genCounter = 0;
     curSlot = 0;
@@ -95,10 +111,10 @@ void DelayEngine::reset()
     declickLeft = 0;
     for (auto& v : lastWetOut) v = 0.0f;
 
-    tLatched = juce::jlimit ((double) minPeriod, (double) maxLen, settings.timeMs * 0.001 * sr);
+    tLatched = juce::jlimit ((double) periodFloor(), (double) maxLen, settings.timeMs * 0.001 * sr);
     tTarget = tEff = tLatched;
     bendGoal.setCurrentAndTargetValue (tLatched);
-    periodLen = juce::jmax (minPeriod, (int) std::round (tEff));
+    periodLen = juce::jmax (periodFloor(), (int) std::round (tEff));
     lastBend = 1.0;
 
     forceFadeCounter = 0;
@@ -155,8 +171,35 @@ bool DelayEngine::transportRestarted (int numSamples)
     return restart;
 }
 
+/** A chain is done when it runs out of repetitions, level or resolution, so its length is
+    just the sum of what it will play - no recursion to bound. */
+double DelayEngine::chainTailSeconds() const
+{
+    const double r = juce::jlimit (kMinSpeed, kMaxSpeed, settings.speed);
+    const double minRep = chainMinRep ((int) tLatched);
+    double total = 0.0, rate = 1.0, gain = 1.0;
+
+    for (int j = 1; j <= kMaxChainReps; ++j)
+    {
+        rate = settings.fbType == FbType::Stable ? r : rate * r;
+        if (j > 1) gain *= (double) settings.feedback;
+        const double dur = tLatched / std::max (rate, 1.0e-6);
+        if (dur < minRep || std::abs (gain) < kChainGainFloor) break;
+        total += dur;
+        if (total >= (double) ringLen) { total = (double) ringLen; break; }
+    }
+    // the last window is heard only once it has closed, a period after its input
+    return (tLatched + total) / sr;
+}
+
 void DelayEngine::updateTail()
 {
+    if (settings.spacing == Spacing::Chain)
+    {
+        tailSeconds.store (chainTailSeconds(), std::memory_order_relaxed);
+        return;
+    }
+
     const double dmax = settings.spacing == Spacing::Tape
                           ? (double) maxLen
                           : std::min (kOverlapFactor * tLatched, (double) maxLen);
@@ -182,7 +225,7 @@ void DelayEngine::updateTiming (int numSamples)
     divPpq = juce::jmax (1.0e-6, quarters);
 
     double newT = wantSync ? (60.0 / bpm * quarters * sr) : (settings.timeMs * 0.001 * sr);
-    newT = juce::jlimit ((double) minPeriod, (double) maxLen, newT);
+    newT = juce::jlimit ((double) periodFloor(), (double) maxLen, newT);
 
     // REGRID re-splices on every latch, so it needs the relative deadband; anything finer
     // than a sample is float noise, and a fixed millisecond floor would make sub-millisecond
@@ -441,6 +484,345 @@ void DelayEngine::openGeneration (double rEff)
 }
 
 //==============================================================================
+float DelayEngine::ringRead (int start, double offset, int ch) const noexcept
+{
+    if (ringLen <= 0) return 0.0f;
+
+    const double o = offset > 0.0 ? offset : 0.0;
+    const int i0 = (int) o;
+    const float f = (float) (o - (double) i0);
+
+    int a = start + i0;
+    if (a >= ringLen) a -= ringLen;
+    const int b = a + 1 >= ringLen ? 0 : a + 1;
+
+    const float* d = ring.getReadPointer (ch);
+    return d[a] + f * (d[b] - d[a]);
+}
+
+double DelayEngine::chainXfade (double dur) const noexcept
+{
+    const double xf = juce::jlimit (kXfadeMinMs * 0.001 * sr, kXfadeMaxMs * 0.001 * sr,
+                                    kXfadePct * std::min (tEff, dur));
+    return std::max (1.0, std::min (xf, dur * 0.5));
+}
+
+double DelayEngine::chainMinRep (int len) const noexcept
+{
+    return std::min (kMinChainRepMs * 0.001 * sr, 0.5 * (double) len);
+}
+
+/** CHAIN launches at most one window per sample and never opens a generation, so the host's
+    buffer size is no floor for it. */
+int DelayEngine::periodFloor() const noexcept
+{
+    return settings.spacing == Spacing::Chain ? 1 : minPeriod;
+}
+
+void DelayEngine::retireChain (int index)
+{
+    Chain& c = chains[index];
+    if (! c.active || c.retiring) return;
+    c.retiring = true;
+    c.retireEnv = c.env;
+    c.retireLeft = c.xfade;
+    // the read holds still through the fade, so it never runs off into a newer window
+    c.pos = juce::jlimit (0.0, std::max (0.0, (double) c.len - 1.0), c.pos);
+}
+
+/** Two slots are kept clear of sounding chains so a launch always has somewhere to go and
+    the chain it displaces - the quietest - can still fade out. */
+int DelayEngine::allocChain()
+{
+    int sounding = 0;
+    for (const auto& c : chains) if (c.active && ! c.retiring) ++sounding;
+
+    if (sounding >= kMaxChains - 2)
+    {
+        int quietest = -1;
+        double quietestLevel = 0.0;
+        for (int i = 0; i < kMaxChains; ++i)
+        {
+            const Chain& c = chains[i];
+            if (! c.active || c.retiring) continue;
+            const double level = std::abs (c.gain) * (double) c.env;
+            if (quietest < 0 || level < quietestLevel)
+            {
+                quietest = i;
+                quietestLevel = level;
+            }
+        }
+        if (quietest >= 0) retireChain (quietest);
+    }
+
+    for (int i = 0; i < kMaxChains; ++i)
+        if (! chains[i].active) return i;
+
+    int best = 0;
+    for (int i = 1; i < kMaxChains; ++i)
+        if (chains[i].order < chains[best].order) best = i;
+    return best;
+}
+
+/** Latches everything one repetition needs, including whether another one follows it: that
+    is what decides if its end is a splice the next repetition covers or a real truncation. */
+void DelayEngine::startChainRep (int index, int rep, double gain, double rEff, float fb)
+{
+    Chain& c = chains[index];
+    const bool stable = settings.fbType == FbType::Stable;
+
+    c.rep = rep;
+    c.gain = gain;
+    c.elapsed = 0.0;
+    c.reverse = settings.direction == Direction::Reverse
+                || (settings.direction == Direction::Alternate && (rep % 2) == 0);
+    c.eqState.reset();
+
+    const double rate = stable ? rEff : std::pow (rEff, (double) rep);
+    c.xfade = chainXfade ((double) c.len / std::max (rate, 1.0e-6));
+
+    // at rate 1 the previous window's chain ends its repetition `rep` right here, and the
+    // two only meet sample-exactly if they run the same way and are equally long
+    c.seamIn = ! c.reverse && c.alignPrev && ringClock - dirChangeClock > c.prevLen
+               && nonUnityClock < c.launch - c.prevLen;
+
+    const int next = rep + 1;
+    const double nextRate = stable ? rEff : std::pow (rEff, (double) next);
+    c.lastRep = next > kMaxChainReps
+                || (double) c.len / std::max (nextRate, 1.0e-6) < chainMinRep (c.len)
+                || std::abs (gain * (double) fb) < kChainGainFloor;
+}
+
+int DelayEngine::launchChain (int len, double rEff, float fb, bool alignPrev, int prevLen)
+{
+    if (len <= 0 || ringLen <= 0) return -1;
+
+    const int ci = allocChain();
+    Chain& c = chains[ci];
+    c = Chain{};
+    c.active = true;
+    c.len = juce::jmin (len, ringLen);
+    c.start = ringWrite - c.len;
+    if (c.start < 0) c.start += ringLen;
+    c.order = ++chainOrder;
+    c.launch = ringClock;
+    c.alignPrev = alignPrev;
+    c.prevLen = prevLen;
+
+    // feedback is the recycle gain, so the first repetition comes back at full level -
+    // repetition j carries fb^(j-1), exactly as the generation ring's first tap does
+    startChainRep (ci, 1, 1.0, rEff, fb);
+    return ci;
+}
+
+/** Windows are contiguous, so at rate 1 a chain's repetition j ends exactly where the next
+    window's starts - but only if both windows are equally long. A silent window launches
+    nothing, and what it would have played is the silence either side of it expects anyway. */
+void DelayEngine::closeWindow (int len, double rEff, float fb)
+{
+    const bool silent = windowPeak < kChainSilence;
+    windowPeak = 0.0f;
+
+    const int clamped = juce::jmin (len, ringLen);
+    if (prevChain >= 0 && chains[prevChain].order == prevChainOrder)
+        chains[prevChain].alignNext = silent || chains[prevChain].len == clamped;
+
+    const bool alignPrev = prevWindowLen == 0 || prevWindowLen == clamped;
+    prevChain = silent ? -1 : launchChain (len, rEff, fb, alignPrev, prevWindowLen);
+    prevChainOrder = chainOrder;
+    prevWindowLen = silent ? 0 : clamped;
+}
+
+/** CHAIN: the input grid stays at T and every window that closes on it starts a chain of its
+    own, each repetition the whole window replayed r times faster than the one before. Nothing
+    is recycled, so there is no runaway to clamp and no gate - a chain ends by itself. */
+void DelayEngine::processChain (juce::AudioBuffer<float>& buffer, int nch, int ns)
+{
+    float* out[2] { buffer.getWritePointer (0), nch > 1 ? buffer.getWritePointer (1) : nullptr };
+
+    const bool eqOn = settings.eqOn;
+    const bool clipOn = settings.clip;
+    const bool bend = settings.timeMode == TimeMode::Bend;
+    const bool stable = settings.fbType == FbType::Stable;
+    const bool syncGrid = syncActive;
+    const int lockMargin = (int) std::ceil (kXfadeMaxMs * 0.001 * sr) + 1;
+
+    for (int i = 0; i < ns; ++i)
+    {
+        const double r = speedSm.getNextValue();
+        double m = 1.0;
+        if (bend)
+        {
+            const double dT = juce::jlimit (-kBendDown, kBendUp, bendGoal.getNextValue() - tEff);
+            tEff += dT;
+            m = 1.0 - dT;
+        }
+        else
+        {
+            tEff = tTarget;
+        }
+        lastBend = m;
+
+        const double rEff = juce::jlimit (0.01, 64.0, r * m);
+        if (std::abs (rEff - 1.0) > 0.0) nonUnityClock = ringClock;
+        ratePow[0] = 1.0;
+        for (int j = 1; j <= kMaxChainReps; ++j) ratePow[j] = ratePow[j - 1] * rEff;
+
+        periodLen = juce::jmax (1, (int) std::round (tEff));
+
+        const double ppqNow = syncGrid ? ppqBlockStart + i * ppqPerSample : 0.0;
+        bool boundary = forceBoundary;
+        forceBoundary = false;
+
+        // a seam that has started to skip its fade is counting on this window closing on
+        // time, so a time change that late moves the next window instead
+        if (! syncGrid && windowEnd == 0 && periodLen - n <= lockMargin) windowEnd = juce::jmax (periodLen, n);
+
+        if (syncGrid) { if (ppqNow >= nextBoundaryPpq - 1.0e-12) boundary = true; }
+        else          { if (n >= (windowEnd > 0 ? windowEnd : periodLen)) boundary = true; }
+
+        float x[2] { 0.0f, 0.0f };
+        for (int ch = 0; ch < nch; ++ch) x[ch] = out[ch][i];
+
+        const float fb = fbSm.getNextValue();
+        const float clipThresh = clipSm.getNextValue();
+        const float dryG = drySm.getNextValue();
+        const float wetG = wetSm.getNextValue();
+
+        if (boundary)
+        {
+            if (syncGrid)
+                nextBoundaryPpq = (std::floor (ppqNow / divPpq + 1.0e-9) + 1.0) * divPpq;
+            closeWindow (n, rEff, fb);
+            n = 0;
+            windowEnd = 0;
+        }
+
+        // how long the window being recorded will be, which decides the newest chain's seams
+        const int openWindowLen = syncGrid
+            ? n + juce::jmax (1, (int) std::ceil ((nextBoundaryPpq - 1.0e-12 - ppqNow) / ppqPerSample))
+            : windowEnd > 0 ? windowEnd : juce::jmax (periodLen, n + 1);
+
+        float wetSum[2] { 0.0f, 0.0f };
+        int live = 0;
+        bool clipped = false;
+
+        for (int ci = 0; ci < kMaxChains; ++ci)
+        {
+            Chain& c = chains[ci];
+            if (! c.active) continue;
+
+            // a window is gone once the recorder has lapped it
+            if (! c.retiring && ringClock - c.launch > (juce::int64) (ringLen - c.len))
+                retireChain (ci);
+
+            const double rate = stable ? rEff : ratePow[juce::jmin (c.rep, kMaxChainReps)];
+
+            double envd;
+            if (c.retiring)
+            {
+                envd = raisedCos (c.retireLeft / c.xfade) * c.retireEnv;
+                c.retireLeft -= 1.0;
+            }
+            else
+            {
+                // At rate 1 a repetition can be handed over sample-exactly: the next window's
+                // chain starts its own on the very next recorded sample at the same gain. That
+                // holds for a forward seam between equally long windows and nowhere else.
+                // Returning to 1x does not realign a chain that has already changed speed.
+                const bool unity = std::abs (rate - 1.0) < kUnityEpsilon
+                                   && nonUnityClock < c.launch;
+                const bool alignNext = ci == prevChain ? openWindowLen == c.len : c.alignNext;
+                const bool seamOut = unity && ! c.reverse && alignNext
+                                     && ringClock - dirChangeClock > (juce::int64) c.elapsed;
+                double a = (double) maxLen;
+                if (! seamOut)
+                    a = std::min (a, ((double) c.len - c.pos) / std::max (rate, 1.0e-6));
+                if (! unity || ! c.seamIn)
+                    a = std::min (a, c.elapsed);
+                envd = raisedCos (a / c.xfade);
+            }
+
+            c.env = (float) envd;
+            ++live;
+
+            const double off = c.reverse ? (double) (c.len - 1) - c.pos : c.pos;
+
+            // the clip belongs to the recycle path, so the first repetition - which has not
+            // been through it - is passed through exactly as the generation ring leaves it
+            const bool recycled = c.rep > 1;
+
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                float sm = ringRead (c.start, off, ch);
+                if (eqOn) sm = eq.process (c.eqState, sm, ch, c.rep - 1);
+                const float pre = sm * (float) c.gain;
+                clipped = clipped || (recycled && std::abs (pre) > clipThresh);
+                wetSum[ch] += softClip (pre, clipOn && recycled, clipThresh) * (float) envd;
+            }
+
+            if (c.retiring)
+            {
+                if (c.retireLeft <= 0.0) { c.active = false; c.env = 0.0f; }
+                continue;
+            }
+
+            c.pos += rate;
+            c.elapsed += 1.0;
+
+            while (c.pos >= (double) c.len)
+            {
+                // A live speed/mode change can invalidate the limit latched at rep start.
+                // Short windows can also cross more than one repetition in a sample.
+                const double nextRate = stable ? rEff : ratePow[juce::jmin (c.rep + 1, kMaxChainReps)];
+                if (c.lastRep || (double) c.len / std::max (nextRate, 1.0e-6) < chainMinRep (c.len))
+                {
+                    c.active = false;
+                    c.env = 0.0f;
+                    break;
+                }
+                c.pos -= (double) c.len;
+                startChainRep (ci, c.rep + 1, c.gain * (double) fb, rEff, fb);
+            }
+        }
+
+        if (live > peakVoices) peakVoices = live;
+
+        if (clipped && clipOn) clipHold = (int) (kClipHoldMs * 0.001 * sr);
+        else if (clipHold > 0) --clipHold;
+
+        if (ringLen > 0)
+        {
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                ring.getWritePointer (ch)[ringWrite] = x[ch];
+                windowPeak = std::max (windowPeak, std::abs (x[ch]));
+            }
+            if (++ringWrite >= ringLen) ringWrite = 0;
+            ++ringClock;
+        }
+
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            lastWetOut[ch] = wetSum[ch] * wetG;
+            out[ch][i] = x[ch] * dryG + lastWetOut[ch];
+        }
+
+        if (declickLeft > 0)
+        {
+            const float g = (float) raisedCos ((double) declickLeft / declickLen);
+            for (int ch = 0; ch < nch; ++ch) out[ch][i] += declickVal[ch] * g;
+            --declickLeft;
+        }
+
+        ++n;
+    }
+
+    updateTail();
+    publishUi();
+}
+
+//==============================================================================
 void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 {
     const int ns = buffer.getNumSamples();
@@ -459,6 +841,18 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
         for (int ch = 0; ch < 2; ++ch) declickVal[ch] = held[ch];
     }
 
+    // CHAIN and the generation ring share no state, so crossing between them restarts the
+    // delay. The declick ramp is the same one a transport restart uses.
+    if ((settings.spacing == Spacing::Chain) != (lastSpacing == Spacing::Chain))
+    {
+        float held[2] { lastWetOut[0], lastWetOut[1] };
+        reset();
+        declickLen = juce::jmax (1, (int) (kResetDeclickMs * 0.001 * sr));
+        declickLeft = declickLen;
+        for (int ch = 0; ch < 2; ++ch) declickVal[ch] = held[ch];
+    }
+    lastSpacing = settings.spacing;
+
     updateTiming (ns);
 
     if (settings.direction != lastDirection)
@@ -472,6 +866,7 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
                 v.fadeOut = true;
 
         dirChangedSeen = true;
+        dirChangeClock = ringClock;
         lastDirection = settings.direction;
     }
 
@@ -483,6 +878,8 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
     clipSm.setTargetValue (settings.clipThresh);
     drySm.setTargetValue (settings.dry);
     wetSm.setTargetValue (settings.wet);
+
+    if (settings.spacing == Spacing::Chain) { processChain (buffer, nch, ns); return; }
 
     const bool eqOn = settings.eqOn;
     const bool clipOn = settings.clip;
@@ -723,6 +1120,37 @@ void DelayEngine::process (juce::AudioBuffer<float>& buffer)
 //==============================================================================
 void DelayEngine::publishUi()
 {
+    if (settings.spacing == Spacing::Chain)
+    {
+        const bool stable = settings.fbType == FbType::Stable;
+        const double r = juce::jlimit (kMinSpeed, kMaxSpeed, settings.speed);
+        int chainCount = 0;
+        double longest = 0.0;
+
+        for (const auto& c : chains)
+        {
+            if (! c.active) continue;
+            const double rate = stable ? r : std::pow (r, (double) c.rep);
+            const double durMs = (double) c.len / std::max (rate, 1.0e-6) / sr * 1000.0;
+
+            if (chainCount < kMaxUiTaps)
+            {
+                uiVoiceElapsed[chainCount].store ((float) (c.elapsed / sr * 1000.0), std::memory_order_relaxed);
+                uiVoiceDuration[chainCount].store ((float) durMs, std::memory_order_relaxed);
+                uiVoiceEnv[chainCount].store (c.env, std::memory_order_relaxed);
+            }
+            longest = std::max (longest, durMs);
+            ++chainCount;
+        }
+
+        uiVoices.store (chainCount, std::memory_order_relaxed);
+        uiClipping.store (clipHold > 0, std::memory_order_relaxed);
+        uiPeriodMs.store (periodLen / sr * 1000.0, std::memory_order_relaxed);
+        uiEffTimeMs.store (tEff / sr * 1000.0, std::memory_order_relaxed);
+        if (longest > 0.0) uiRepMs.store (longest, std::memory_order_relaxed);
+        return;
+    }
+
     int count = 0;
     double repMs = 0.0;
     for (int i = 0; i < kMaxVoices; ++i)
